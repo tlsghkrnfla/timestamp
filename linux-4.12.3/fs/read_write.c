@@ -26,6 +26,7 @@
 
 // CLUSTER
 #include <linux/cluster.h>
+ssize_t CLUSTER_speculative_read(struct file *, char __user *, size_t, loff_t *);
 
 const struct file_operations generic_ro_fops = {
 	.llseek		= generic_file_llseek,
@@ -457,60 +458,6 @@ ssize_t __vfs_read(struct file *file, char __user *buf, size_t count,
 		return -EINVAL;
 }
 EXPORT_SYMBOL(__vfs_read);
-
-// CLUSTER
-ssize_t CLUSTER_speculative_read(struct file *file, char __user *buf,
-								size_t count, loff_t *pos)
-{
-	struct iovec iov = { .iov_base = buf, .iov_len = count };
-	struct kiocb kiocb;
-	struct iov_iter iter;
-	ssize_t ret = 0;
-	loff_t ppos;
-
-	//ATOMIC_NOTIFIER_HEAD(vfs_chain);
-	//ATOMIC_NOTIFIER_HEAD(pc_chain);
-	//ATOMIC_NOTIFIER_HEAD(dd_chain);
-	//ATOMIC_NOTIFIER_HEAD(poll_chain);
-
-	if (!(file->f_mode & FMODE_READ))
-		return -EBADF;
-	if (!(file->f_mode & FMODE_CAN_READ))
-		return -EINVAL;
-
-	//current->vfs_chain = &vfs_chain;	
-	//current->pc_chain = &pc_chain;	
-	//current->dd_chain = &dd_chain;	
-	//current->poll_chain = &poll_chain;	
-	//atomic_notifier_chain_register(current->vfs_chain, &async_vfs_chain);
-	//current->async_process_data.file = file;
-	//current->async_process_data.buf = buf;
-	//current->async_process_data.count = count;
-	//current->async_process_data.pos = pos;
-
-	//init_sync_kiocb(&kiocb, file);
-	//kiocb.ki_pos = *pos;
-	iov_iter_init(&iter, READ, &iov, 1, count);
-	//ret = file->f_op->CLUSTER_read_iter(&kiocb, &iter);
-	//ret = file->f_op->read_iter(&kiocb, &iter);
-	ret = CLUSTER_do_generic_file_read(file, &ppos, &iter, ret);
-	ppos = *pos;
-
-
-
-
-
-	BUG_ON(ret == -EIOCBQUEUED);
-	*pos = ppos;
-
-	if (ret > 0) {
-		fsnotify_access(file);
-		add_rchar(current, ret);
-	}
-	inc_syscr(current);
-
-	return ret;
-}
 
 ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
@@ -2142,3 +2089,65 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL(vfs_dedupe_file_range);
+
+// CLUSTER
+int CLUSTER_lazy_vfs(struct notifier_block *self, unsigned long val, void *_data)
+{
+	struct lazy_chain_data *data = (struct lazy_chain_data *)_data;
+	struct file *file = data->file;
+	char __user *buf = data->buf;
+	size_t count = data->count;
+	loff_t *pos = data->pos;
+
+	if (unlikely(!access_ok(VERIFY_WRITE, buf, count))) {
+		printk("CLUSTER_async_vfs access ok error!!\n");
+		return -EFAULT;
+	}
+
+	return (ssize_t)rw_verify_area(READ, file, pos, count);
+}
+
+struct notifier_block lazy_vfs_chain = {
+	.notifier_call = CLUSTER_lazy_vfs,
+	.priority = 0,
+};
+
+ssize_t CLUSTER_speculative_read(struct file *file, char __user *buf,
+								size_t count, loff_t *pos)
+{
+	struct iovec iov = { .iov_base = buf, .iov_len = count };
+	struct iov_iter iter;
+	ssize_t ret = 0;
+
+	if (!(file->f_mode & FMODE_READ))
+		return -EBADF;
+	if (!(file->f_mode & FMODE_CAN_READ))
+		return -EINVAL;
+
+	ATOMIC_NOTIFIER_HEAD(vfs_chain);
+	ATOMIC_NOTIFIER_HEAD(pc_chain);
+	ATOMIC_NOTIFIER_HEAD(dd_chain);
+	ATOMIC_NOTIFIER_HEAD(poll_chain);
+	current->vfs_chain = &vfs_chain;	
+	current->pc_chain = &pc_chain;	
+	current->dd_chain = &dd_chain;	
+	current->poll_chain = &poll_chain;	
+	atomic_notifier_chain_register(current->vfs_chain, &lazy_vfs_chain);
+	current->chain_data.file = file;
+	current->chain_data.buf = buf;
+	current->chain_data.count = count;
+	current->chain_data.pos = pos;
+
+	iov_iter_init(&iter, READ, &iov, 1, count);
+	ret = CLUSTER_generic_file_read(file, pos, &iter, ret);
+	BUG_ON(ret == -EIOCBQUEUED);
+
+	if (ret > 0) {
+		fsnotify_access(file);
+		add_rchar(current, ret);
+	}
+	inc_syscr(current);
+
+	return ret;
+}
+

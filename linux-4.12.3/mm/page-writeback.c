@@ -2848,3 +2848,24 @@ void wait_for_stable_page(struct page *page)
 		wait_on_page_writeback(page);
 }
 EXPORT_SYMBOL_GPL(wait_for_stable_page);
+
+// CLUSTER
+int CLUSTER_do_writepages(struct address_space *mapping, struct writeback_control *wbc)
+{
+	int ret;
+
+	if (wbc->nr_to_write <= 0)
+		return 0;
+	while (1) {
+		if (mapping->a_ops->CLUSTER_writepages)
+			ret = mapping->a_ops->CLUSTER_writepages(mapping, wbc);
+		else
+			ret = generic_writepages(mapping, wbc);
+		if ((ret != -ENOMEM) || (wbc->sync_mode != WB_SYNC_ALL))
+			break;
+		cond_resched();
+		congestion_wait(BLK_RW_ASYNC, HZ/50);
+	}
+	return ret;
+}
+

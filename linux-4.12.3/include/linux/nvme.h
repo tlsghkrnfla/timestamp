@@ -17,9 +17,6 @@
 
 #include <linux/types.h>
 
-// CLUSTER
-DECLARE_PER_CPU(struct list_head, CLUSTER_pagelist);
-
 /* NQN names in commands fields specified one size */
 #define NVMF_NQN_FIELD_LEN	256
 

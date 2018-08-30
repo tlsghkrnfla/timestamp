@@ -2381,6 +2381,7 @@ extern int ext4_check_all_de(struct inode *dir, struct buffer_head *bh,
 
 /* fsync.c */
 extern int ext4_sync_file(struct file *, loff_t, loff_t, int);
+extern int CLUSTER_ext4_sync_file(struct file *, loff_t, loff_t, int);
 
 /* hash.c */
 extern int ext4fs_dirhash(const char *name, int len, struct
@@ -3168,6 +3169,8 @@ extern void ext4_io_submit_init(struct ext4_io_submit *io,
 				struct writeback_control *wbc);
 extern void ext4_end_io_rsv_work(struct work_struct *work);
 extern void ext4_io_submit(struct ext4_io_submit *io);
+// CLUSTER
+extern void CLUSTER_ext4_io_submit(struct ext4_io_submit *io);
 extern int ext4_bio_write_page(struct ext4_io_submit *io,
 			       struct page *page,
 			       int len,
@@ -3243,10 +3246,10 @@ static inline void ext4_clear_io_unwritten_flag(ext4_io_end_t *io_end)
 
 extern const struct iomap_ops ext4_iomap_ops;
 
-// CLUSTER
-void CLUSTER_extent_preload(struct address_space *mapping);
-
 #endif	/* __KERNEL__ */
+
+// CLUSTER
+int CLUSTER_extent_preload(struct address_space *mapping);
 
 #define EFSBADCRC	EBADMSG		/* Bad CRC detected */
 #define EFSCORRUPTED	EUCLEAN		/* Filesystem is corrupted */

@@ -22,6 +22,9 @@
 
 #include "internal.h"
 
+#include <linux/cluster.h>
+#include "../fs/ext4/ext4.h"
+
 /*
  * Initialise a struct file's readahead state.  Assumes that the caller has
  * memset *ra to zero.
@@ -592,3 +595,328 @@ SYSCALL_DEFINE3(readahead, int, fd, loff_t, offset, size_t, count)
 	}
 	return ret;
 }
+
+// CLUSTER
+int CLUSTER_mpage_end_io(struct bio *bio, int error)
+{
+	struct bio_vec *bv;
+	int i, count = 0;
+
+	bio_for_each_segment_all(bv, bio, i) {
+		struct page *page = bv->bv_page;
+
+		if (!page->mapping) {
+			printk("duplicate I/O\n");
+			ClearPageUptodate(page);
+			__free_pages(page, 0);
+			continue;
+		}
+		if (!error) {
+			ClearPageError(page);
+			SetPageUptodate(page);
+		} else {
+			ClearPageUptodate(page);
+			SetPageError(page);
+		}
+		if (!count) {
+			unlock_page(page);
+			continue;
+		}
+		put_page(page);
+		unlock_page(page);	
+	}
+	bio_put(bio);
+
+	return 0;
+}
+
+int CLUSTER_lazy_pc(struct notifier_block *self, unsigned long val, void *data)
+{
+	struct lazy_chain_data *chain_data = (struct lazy_chain_data *)data;
+	struct address_space *mapping = chain_data->file->f_mapping;
+	struct page *page;
+	int error;
+
+	while (!list_empty(&chain_data->pagelist)) {
+		page = list_last_entry(&chain_data->pagelist, struct page, lru);
+		list_del(&page->lru);
+		kfree(page->mapping);
+		error = add_to_page_cache_lru(page, mapping, page->index,
+					mapping_gfp_constraint(mapping, GFP_KERNEL));
+		if (error) {
+			if (error == -EEXIST) {
+				page->mapping = NULL;
+				printk("[CLUSTER] page cache EEXIST (duplicated I/O on same index)\n");
+			} else
+				printk(KERN_ERR "[CLUSTER] add_to_page_cache_lru error\n");
+			continue;
+		}
+	}
+
+	for (error = 0; error < chain_data->req_size; error++) {
+		page = page_cache_alloc_cold(mapping);
+		if (!page) printk("Page reallocation error!!\n");
+		list_add(&page->lru, &chain_data->pagelist);
+	}
+
+	return 0;
+}
+
+struct notifier_block lazy_pc_chain = {
+	.notifier_call = CLUSTER_lazy_pc,
+	.priority = 1,
+};
+
+struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping, struct file *filp,
+			pgoff_t offset, unsigned long nr_to_read, unsigned long lookahead_size)
+{
+	struct inode *inode = mapping->host;
+	struct page *page, *return_page = NULL;
+	unsigned long end_index;	/* The last page we want to read */
+	LIST_HEAD(page_pool);
+	int page_idx;
+	int ret = 0, req_num = 0;
+	loff_t isize = i_size_read(inode);
+	//gfp_t gfp_mask = readahead_gfp_mask(mapping);
+
+	struct bio *bio, *first_bio = NULL;
+	const unsigned blkbits = inode->i_blkbits;
+	unsigned long lbn, ex_lbn = -1;
+	struct ext4_map_blocks map;
+
+	struct CLUSTER_table *table = &get_cpu_var(CLUSTER_tables);
+	struct list_head *pagelist = &table->pagelist;
+	struct lazy_chain_data *chain_data = &current->chain_data;
+	INIT_LIST_HEAD(&chain_data->pagelist);
+
+	if (isize == 0)
+		goto out;
+
+	end_index = ((isize - 1) >> PAGE_SHIFT);
+
+	/*
+	 * Preallocate as many pages as we will need.
+	 */
+	for (page_idx = 0; page_idx < nr_to_read; page_idx++) {
+		pgoff_t page_offset = offset + page_idx;
+		sector_t block_in_file, last_block;
+
+		if (page_offset > end_index)
+			break;
+
+		// Page allocation
+		page = list_last_entry(pagelist, struct page, lru);
+		list_del(&page->lru);
+		list_add(&page->lru, &chain_data->pagelist);
+
+		// Find LBA with page index
+		block_in_file = (sector_t)page_offset << (PAGE_SHIFT - blkbits);
+		last_block = block_in_file + nr_to_read * (PAGE_SIZE >> blkbits);
+
+		if ((map.m_flags & EXT4_MAP_MAPPED) && block_in_file > map.m_lblk &&
+			block_in_file < (map.m_lblk + map.m_len)) {
+			unsigned map_offset = block_in_file - map.m_lblk;
+			lbn = map.m_pblk + map_offset;
+		} else {
+			map.m_lblk = block_in_file;
+			map.m_len = last_block - block_in_file;
+			if (ext4_map_blocks(NULL, inode, &map, 0) < 0)
+				continue;
+			lbn = map.m_pblk;
+		}
+
+		__SetPageLocked(page);
+		page->index = page_offset;
+		if ((ex_lbn == -1) || (ex_lbn + 1 != lbn)) {
+			if (!first_bio) {
+				first_bio = bio_alloc(GFP_KERNEL,
+							min_t(int, nr_to_read, BIO_MAX_PAGES));
+				bio = first_bio;
+				//__set_page_poll(page);
+				return_page = page;
+			} else {
+				bio->bi_next = bio_alloc(GFP_KERNEL,
+							min_t(int, nr_to_read, BIO_MAX_PAGES));
+				bio = bio->bi_next;
+				bio->bi_next = NULL;
+			}
+			bio->bi_iter.bi_sector = lbn;
+			req_num++;
+		}
+		ex_lbn = lbn;
+		bio_add_page(bio, page, PAGE_SIZE, 0);
+
+		if (page_idx == nr_to_read - lookahead_size)
+			SetPageReadahead(page);
+		ret++;
+
+		if (ret == 32)
+			ex_lbn = -1;
+	}
+
+	if (ret) {
+		//chain_data->async = 0;
+		//chain_data->mapping = mapping;
+		chain_data->req_size = ret;
+		chain_data->req_num = req_num;
+		chain_data->end_io = CLUSTER_mpage_end_io;
+		atomic_notifier_chain_register(current->pc_chain, &lazy_pc_chain);
+		table->CLUSTER_nvme_ops->CLUSTER_direct_read(table, first_bio);
+	}
+out:
+	return return_page;
+}
+
+struct page *CLUSTER_force_page_cache_readahead(struct address_space *mapping,
+			struct file *filp, pgoff_t offset, unsigned long nr_to_read)
+{
+	struct backing_dev_info *bdi = inode_to_bdi(mapping->host);
+	struct file_ra_state *ra = &filp->f_ra;
+	unsigned long max_pages;
+	struct page *page = NULL;
+
+	/*
+	 * If the request exceeds the readahead window, allow the read to
+	 * be up to the optimal hardware IO size
+	 */
+	max_pages = max_t(unsigned long, bdi->io_pages, ra->ra_pages);
+	nr_to_read = min(nr_to_read, max_pages);
+	while (nr_to_read) {
+		unsigned long this_chunk = (2 * 1024 * 1024) / PAGE_SIZE;
+
+		if (this_chunk > nr_to_read)
+			this_chunk = nr_to_read;
+		page = CLUSTER_do_page_cache_readahead(mapping, filp,
+						offset, this_chunk, 0);
+
+		offset += this_chunk;
+		nr_to_read -= this_chunk;
+	}
+	return page;
+}
+
+static struct page
+*CLUSTER_ondemand_readahead(struct address_space *mapping,
+		   struct file_ra_state *ra, struct file *filp,
+		   bool hit_readahead_marker, pgoff_t offset,
+		   unsigned long req_size)
+{
+	struct backing_dev_info *bdi = inode_to_bdi(mapping->host);
+	unsigned long max_pages = ra->ra_pages;
+	pgoff_t prev_offset;
+
+	/*
+	 * If the request exceeds the readahead window, allow the read to
+	 * be up to the optimal hardware IO size
+	 */
+	if (req_size > max_pages && bdi->io_pages > max_pages)
+		max_pages = min(req_size, bdi->io_pages);
+
+	/*
+	 * start of file
+	 */
+	if (!offset)
+		goto initial_readahead;
+
+	/*
+	 * It's the expected callback offset, assume sequential access.
+	 * Ramp up sizes, and push forward the readahead window.
+	 */
+	if ((offset == (ra->start + ra->size - ra->async_size) ||
+	     offset == (ra->start + ra->size))) {
+		ra->start += ra->size;
+		ra->size = get_next_ra_size(ra, max_pages);
+		ra->async_size = ra->size;
+		goto readit;
+	}
+
+	/*
+	 * Hit a marked page without valid readahead state.
+	 * E.g. interleaved reads.
+	 * Query the pagecache for async_size, which normally equals to
+	 * readahead size. Ramp it up and use it as the new readahead size.
+	 */
+	if (hit_readahead_marker) {
+		pgoff_t start;
+
+		rcu_read_lock();
+		start = page_cache_next_hole(mapping, offset + 1, max_pages);
+		rcu_read_unlock();
+
+		if (!start || start - offset > max_pages)
+			return 0;
+
+		ra->start = start;
+		ra->size = start - offset;	/* old async_size */
+		ra->size += req_size;
+		ra->size = get_next_ra_size(ra, max_pages);
+		ra->async_size = ra->size;
+		goto readit;
+	}
+
+	/*
+	 * oversize read
+	 */
+	if (req_size > max_pages)
+		goto initial_readahead;
+
+	/*
+	 * sequential cache miss
+	 * trivial case: (offset - prev_offset) == 1
+	 * unaligned reads: (offset - prev_offset) == 0
+	 */
+	prev_offset = (unsigned long long)ra->prev_pos >> PAGE_SHIFT;
+	if (offset - prev_offset <= 1UL)
+		goto initial_readahead;
+
+	/*
+	 * Query the page cache and look for the traces(cached history pages)
+	 * that a sequential stream would leave behind.
+	 */
+	if (try_context_readahead(mapping, ra, offset, req_size, max_pages))
+		goto readit;
+
+	/*
+	 * standalone, small random read
+	 * Read as is, and do not pollute the readahead state.
+	 */
+	return CLUSTER_do_page_cache_readahead(mapping, filp, offset, req_size, 0);
+
+initial_readahead:
+	ra->start = offset;
+	ra->size = get_init_ra_size(req_size, max_pages);
+	ra->async_size = ra->size > req_size ? ra->size - req_size : ra->size;
+
+readit:
+	/*
+	 * Will this read hit the readahead marker made by itself?
+	 * If so, trigger the readahead marker hit now, and merge
+	 * the resulted next readahead window into the current one.
+	 */
+	if (offset == ra->start && ra->size == ra->async_size) {
+		ra->async_size = get_next_ra_size(ra, max_pages);
+		ra->size += ra->async_size;
+	}
+
+	return CLUSTER_do_page_cache_readahead(mapping, filp,
+						ra->start, ra->size, ra->async_size);
+}
+
+struct page *CLUSTER_page_cache_sync_readahead(struct address_space *mapping,
+			       struct file_ra_state *ra, struct file *filp,
+			       pgoff_t offset, unsigned long req_size)
+{
+	/* no read-ahead */
+	if (!ra->ra_pages)
+		return NULL;
+
+	/* be dumb */
+	if (filp && (filp->f_mode & FMODE_RANDOM)) {
+		return CLUSTER_force_page_cache_readahead(mapping, filp, offset, req_size);
+	}
+
+	/* do read-ahead */
+	return CLUSTER_ondemand_readahead(mapping, ra, filp, false, offset, req_size);
+}
+EXPORT_SYMBOL_GPL(CLUSTER_page_cache_sync_readahead);
+

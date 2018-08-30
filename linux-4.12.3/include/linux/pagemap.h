@@ -348,6 +348,9 @@ unsigned find_get_entries_tag(struct address_space *mapping, pgoff_t start,
 
 struct page *grab_cache_page_write_begin(struct address_space *mapping,
 			pgoff_t index, unsigned flags);
+// CLUSTER
+struct page *CLUSTER_grab_cache_page_write_begin(struct address_space *mapping,
+			pgoff_t index, unsigned flags);
 
 /*
  * Returns locked page at given index in given cache, creating it if needed.

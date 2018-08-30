@@ -197,6 +197,10 @@ int sync_dirty_buffer(struct buffer_head *bh);
 int __sync_dirty_buffer(struct buffer_head *bh, int op_flags);
 void write_dirty_buffer(struct buffer_head *bh, int op_flags);
 int submit_bh(int, int, struct buffer_head *);
+// CLUSTER
+struct bio *CLUSTER_make_bh_to_bio(int, int, struct buffer_head *);
+int CLUSTER_submit_bh(int, int, struct buffer_head *);
+int CLUSTER_submit_bio(int, int, struct bio *);
 void write_boundary_block(struct block_device *bdev,
 			sector_t bblock, unsigned blocksize);
 int bh_uptodate_or_lock(struct buffer_head *bh);

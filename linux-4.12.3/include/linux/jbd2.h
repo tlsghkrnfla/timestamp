@@ -796,6 +796,12 @@ jbd2_time_diff(unsigned long start, unsigned long end)
 
 struct journal_s
 {
+	// CLUSTER
+	int CLUSTER_journal;
+	struct buffer_head *pre_descriptor_block;
+	struct buffer_head *pre_metadata_block;
+	struct buffer_head *pre_commit_block;
+
 	/* General journaling state flags [j_state_lock] */
 	unsigned long		j_flags;
 
@@ -1155,6 +1161,8 @@ static inline void jbd2_unfile_log_bh(struct buffer_head *bh)
 
 /* Log buffer allocation */
 struct buffer_head *jbd2_journal_get_descriptor_buffer(transaction_t *, int);
+// CLUSTER
+struct buffer_head *CLUSTER_jbd2_journal_get_descriptor_buffer(journal_t *, int);
 void jbd2_descriptor_block_csum_set(journal_t *, struct buffer_head *);
 int jbd2_journal_next_log_block(journal_t *, unsigned long long *);
 int jbd2_journal_get_log_tail(journal_t *journal, tid_t *tid,
@@ -1164,6 +1172,7 @@ void jbd2_update_log_tail(journal_t *journal, tid_t tid, unsigned long block);
 
 /* Commit management */
 extern void jbd2_journal_commit_transaction(journal_t *);
+extern void CLUSTER_jbd2_journal_commit_transaction(journal_t *);
 
 /* Checkpoint list management */
 void __jbd2_journal_clean_checkpoint_list(journal_t *journal, bool destroy);
@@ -1206,6 +1215,10 @@ extern int jbd2_journal_write_metadata_buffer(transaction_t *transaction,
 					      struct journal_head *jh_in,
 					      struct buffer_head **bh_out,
 					      sector_t blocknr);
+// CLUSTER
+extern int CLUSTER_jbd2_journal_write_metadata_buffer(transaction_t *transaction,
+							struct journal_head *jh_in, struct buffer_head **bh_out,
+							struct buffer_head *new_bh);
 
 /* Transaction locking */
 extern void		__wait_on_journal (journal_t *);

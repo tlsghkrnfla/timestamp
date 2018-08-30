@@ -1064,9 +1064,11 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 			fd_install(fd, f);
 
 			// CLUSTER
-			if (flags & O_CLUSTER)
+			if (flags & O_CLUSTER) {
+				f->f_flags |= O_CLUSTER;
 				if (CLUSTER_extent_preload(f->f_mapping))
 					printk(KERN_ERR "[CLUSTER] CLUSTER_extent_preload error\n");
+			}
 		}
 	}
 	putname(tmp);

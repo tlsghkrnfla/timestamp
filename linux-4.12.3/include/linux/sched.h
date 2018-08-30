@@ -26,6 +26,7 @@
 #include <linux/signal_types.h>
 #include <linux/mm_types_task.h>
 #include <linux/task_io_accounting.h>
+#include <linux/cluster.h>
 
 /* task_struct member predeclarations (sorted alphabetically): */
 struct audit_context;
@@ -488,6 +489,14 @@ struct task_struct {
 	 */
 	struct thread_info		thread_info;
 #endif
+
+	// CLUSTER
+	struct atomic_notifier_head *vfs_chain;
+	struct atomic_notifier_head *pc_chain;
+	struct atomic_notifier_head *dd_chain;
+	struct atomic_notifier_head *poll_chain;
+	struct lazy_chain_data chain_data;
+
 	/* -1 unrunnable, 0 runnable, >0 stopped: */
 	volatile long			state;
 	void				*stack;

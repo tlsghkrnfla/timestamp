@@ -531,3 +531,24 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
 		end_page_writeback(page);
 	return ret;
 }
+
+// CLUSTER
+void CLUSTER_ext4_io_submit(struct ext4_io_submit *io)
+{
+	//struct CLUSTER_table *table = &get_cpu_var(CLUSTER_tables);
+	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+	struct bio *bio = io->io_bio;
+
+	if (bio) {
+		int io_op_flags = io->io_wbc->sync_mode == WB_SYNC_ALL ?
+				  REQ_SYNC : 0;
+		bio_set_op_attrs(io->io_bio, REQ_OP_WRITE, io_op_flags);
+		table->CLUSTER_nvme_ops->CLUSTER_direct_write(table, bio);
+		//submit_bio(io->io_bio);
+	}
+
+	//put_cpu_var(CLUSTER_tables);
+
+	io->io_bio = NULL;
+}
+

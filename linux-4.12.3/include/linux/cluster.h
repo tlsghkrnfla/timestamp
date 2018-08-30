@@ -9,6 +9,7 @@
 #include <linux/gfp.h>
 #include <linux/bug.h>
 #include <linux/list.h>
+#include <linux/fs.h>
 #include <linux/mmzone.h>
 #include <linux/rbtree.h>
 #include <linux/atomic.h>
@@ -24,20 +25,40 @@
 #include <linux/err.h>
 #include <linux/page_ref.h>
 
+struct CLUSTER_table;
+
 struct CLUSTER_nvme_operations {
-	void (*CLUSTER_nvme_queue_rq)(void *);
+	int (*CLUSTER_direct_read)(struct CLUSTER_table *, struct bio *);
+	int (*CLUSTER_direct_write)(struct CLUSTER_table *, struct bio *);
 };
 
 struct CLUSTER_table {
+	void *nvmeq;
 	struct CLUSTER_nvme_operations *CLUSTER_nvme_ops;
-	struct list_head *pagelist;
+	struct list_head pagelist, write_pagelist;
+	struct list_head iodlist;
 };
 
-DECLARE_PER_CPU(struct list_head, CLUSTER_pagelist);
+typedef int (CLUSTER_end_io_t)(struct bio *, int);
+
+struct lazy_chain_data {
+	// vfs
+	struct file *file;
+	char __user *buf;
+	size_t count;
+	loff_t *pos;
+
+	struct list_head pagelist;
+	int req_size, req_num;
+	CLUSTER_end_io_t *end_io;
+
+	// journaling
+	void *journal;
+};
+
+DECLARE_PER_CPU(struct CLUSTER_table, CLUSTER_tables);
 
 struct CLUSTER_table *get_CLUSTER_table(void);
-ssize_t CLUSTER_do_generic_file_read(struct file *filp, loff_t *ppos,
-								struct iov_iter *iter, ssize_t written);
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_CLUSTER_H */
