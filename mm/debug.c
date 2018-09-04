@@ -11,6 +11,8 @@
 #include <linux/memcontrol.h>
 
 static const struct trace_print_flags pageflag_names[] = {
+	{1UL << PG_poll,		"poll"	},
+	{1UL << PG_oncache,		"oncache"	},
 	{1UL << PG_locked,		"locked"	},
 	{1UL << PG_error,		"error"		},
 	{1UL << PG_referenced,		"referenced"	},

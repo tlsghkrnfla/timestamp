@@ -72,6 +72,8 @@
  * SPARSEMEM_EXTREME with !SPARSEMEM_VMEMMAP).
  */
 enum pageflags {
+	PG_poll,
+	PG_oncache,
 	PG_locked,		/* Page is locked. Don't touch. */
 	PG_error,
 	PG_referenced,

@@ -60,6 +60,8 @@ struct sched_param {
 #include <linux/magic.h>
 #include <linux/cgroup-defs.h>
 
+#include <linux/cluster.h>
+
 #include <asm/processor.h>
 
 #define SCHED_ATTR_SIZE_VER0	48	/* sizeof first published struct */
@@ -1377,6 +1379,12 @@ struct tlbflush_unmap_batch {
 };
 
 struct task_struct {
+	struct atomic_notifier_head *vfs_chain;
+	struct atomic_notifier_head *pc_chain;
+	struct atomic_notifier_head *dd_chain;
+	struct atomic_notifier_head *poll_chain;
+	struct task_overlap_data overlap_data;
+
 	volatile long state;	/* -1 unrunnable, 0 runnable, >0 stopped */
 	void *stack;
 	atomic_t usage;

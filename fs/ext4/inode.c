@@ -5378,3 +5378,346 @@ out:
 	sb_end_pagefault(inode->i_sb);
 	return ret;
 }
+
+int CLUSTER_extent_preload(struct address_space *mapping)
+{
+	struct inode *inode = mapping->host;
+	const unsigned blkbits = inode->i_blkbits;
+	const unsigned blocksize = 1 << blkbits;
+	sector_t block_in_file;
+	sector_t last_block;
+	struct ext4_map_blocks map;
+
+	block_in_file = 0;
+	last_block = (i_size_read(inode) + blocksize - 1) >> blkbits;
+	while (block_in_file < last_block) {
+		map.m_lblk = block_in_file;
+		map.m_len = last_block - block_in_file;
+		if (ext4_map_blocks(NULL, inode, &map, 0) < 0) {
+			printk(KERN_ERR "[CLUSTER ERROR] CLUSTER_extent_preload\n");
+			return -1;
+		}
+		block_in_file += map.m_len;
+	}
+
+	return 0;
+}
+
+/*
+static int CLUSTER_ext4_writepages(struct address_space *mapping,
+			   struct writeback_control *wbc)
+{
+	pgoff_t	writeback_index = 0;
+	long nr_to_write = wbc->nr_to_write;
+	int range_whole = 0;
+	int cycled = 1;
+	handle_t *handle = NULL;
+	struct mpage_da_data mpd;
+	struct inode *inode = mapping->host;
+	int needed_blocks, rsv_blocks = 0, ret = 0;
+	struct ext4_sb_info *sbi = EXT4_SB(mapping->host->i_sb);
+	bool done;
+	struct blk_plug plug;
+	bool give_up_on_write = false;
+
+	if (unlikely(ext4_forced_shutdown(EXT4_SB(inode->i_sb))))
+		return -EIO;
+
+	percpu_down_read(&sbi->s_journal_flag_rwsem);
+	trace_ext4_writepages(inode, wbc);
+
+	if (dax_mapping(mapping)) {
+		ret = dax_writeback_mapping_range(mapping, inode->i_sb->s_bdev,
+						  wbc);
+		goto out_writepages;
+	}
+
+	if (!mapping->nrpages || !mapping_tagged(mapping, PAGECACHE_TAG_DIRTY))
+		goto out_writepages;
+
+	if (ext4_should_journal_data(inode)) {
+		struct blk_plug plug;
+
+		blk_start_plug(&plug);
+		ret = write_cache_pages(mapping, wbc, __writepage, mapping);
+		blk_finish_plug(&plug);
+		goto out_writepages;
+	}
+
+	if (unlikely(ext4_forced_shutdown(EXT4_SB(mapping->host->i_sb)) ||
+		     sbi->s_mount_flags & EXT4_MF_FS_ABORTED)) {
+		ret = -EROFS;
+		goto out_writepages;
+	}
+
+	if (ext4_should_dioread_nolock(inode)) {
+		rsv_blocks = 1 + (PAGE_SIZE >> inode->i_blkbits);
+	}
+
+	if (ext4_has_inline_data(inode)) {
+		handle = ext4_journal_start(inode, EXT4_HT_INODE, 1);
+		if (IS_ERR(handle)) {
+			ret = PTR_ERR(handle);
+			goto out_writepages;
+		}
+		BUG_ON(ext4_test_inode_state(inode,
+				EXT4_STATE_MAY_INLINE_DATA));
+		ext4_destroy_inline_data(handle, inode);
+		ext4_journal_stop(handle);
+	}
+
+	if (wbc->range_start == 0 && wbc->range_end == LLONG_MAX)
+		range_whole = 1;
+
+	if (wbc->range_cyclic) {
+		writeback_index = mapping->writeback_index;
+		if (writeback_index)
+			cycled = 0;
+		mpd.first_page = writeback_index;
+		mpd.last_page = -1;
+	} else {
+		mpd.first_page = wbc->range_start >> PAGE_SHIFT;
+		mpd.last_page = wbc->range_end >> PAGE_SHIFT;
+	}
+
+	mpd.inode = inode;
+	mpd.wbc = wbc;
+	ext4_io_submit_init(&mpd.io_submit, wbc);
+retry:
+	if (wbc->sync_mode == WB_SYNC_ALL || wbc->tagged_writepages)
+		tag_pages_for_writeback(mapping, mpd.first_page, mpd.last_page);
+	done = false;
+	//blk_start_plug(&plug);
+
+	mpd.do_map = 0;
+	mpd.io_submit.io_end = ext4_init_io_end(inode, GFP_KERNEL);
+	if (!mpd.io_submit.io_end) {
+		ret = -ENOMEM;
+		goto unplug;
+	}
+	ret = mpage_prepare_extent_to_map(&mpd);
+	CLUSTER_ext4_io_submit(&mpd.io_submit);
+	ext4_put_io_end_defer(mpd.io_submit.io_end);
+	mpd.io_submit.io_end = NULL;
+	mpage_release_unused_pages(&mpd, false);
+	if (ret < 0)
+		goto unplug;
+
+	while (!done && mpd.first_page <= mpd.last_page) {
+		mpd.io_submit.io_end = ext4_init_io_end(inode, GFP_KERNEL);
+		if (!mpd.io_submit.io_end) {
+			ret = -ENOMEM;
+			break;
+		}
+
+		BUG_ON(ext4_should_journal_data(inode));
+		needed_blocks = ext4_da_writepages_trans_blocks(inode);
+
+		handle = ext4_journal_start_with_reserve(inode,
+				EXT4_HT_WRITE_PAGE, needed_blocks, rsv_blocks);
+		if (IS_ERR(handle)) {
+			ret = PTR_ERR(handle);
+			ext4_msg(inode->i_sb, KERN_CRIT, "%s: jbd2_start: "
+			       "%ld pages, ino %lu; err %d", __func__,
+				wbc->nr_to_write, inode->i_ino, ret);
+			ext4_put_io_end(mpd.io_submit.io_end);
+			mpd.io_submit.io_end = NULL;
+			break;
+		}
+		mpd.do_map = 1;
+
+		trace_ext4_da_write_pages(inode, mpd.first_page, mpd.wbc);
+		ret = mpage_prepare_extent_to_map(&mpd);
+		if (!ret) {
+			if (mpd.map.m_len)
+				ret = mpage_map_and_submit_extent(handle, &mpd,
+					&give_up_on_write);
+			else {
+				done = true;
+			}
+		}
+		if (!ext4_handle_valid(handle) || handle->h_sync == 0) {
+			ext4_journal_stop(handle);
+			handle = NULL;
+			mpd.do_map = 0;
+		}
+		CLUSTER_ext4_io_submit(&mpd.io_submit);
+		mpage_release_unused_pages(&mpd, give_up_on_write);
+		if (handle) {
+			ext4_put_io_end_defer(mpd.io_submit.io_end);
+			ext4_journal_stop(handle);
+		} else
+			ext4_put_io_end(mpd.io_submit.io_end);
+		mpd.io_submit.io_end = NULL;
+
+		if (ret == -ENOSPC && sbi->s_journal) {
+			jbd2_journal_force_commit_nested(sbi->s_journal);
+			ret = 0;
+			continue;
+		}
+		if (ret)
+			break;
+	}
+unplug:
+	//blk_finish_plug(&plug);
+	if (!ret && !cycled && wbc->nr_to_write > 0) {
+		cycled = 1;
+		mpd.last_page = writeback_index - 1;
+		mpd.first_page = 0;
+		goto retry;
+	}
+
+	if (wbc->range_cyclic || (range_whole && wbc->nr_to_write > 0))
+		mapping->writeback_index = mpd.first_page;
+
+out_writepages:
+	trace_ext4_writepages_result(inode, wbc, ret,
+				     nr_to_write - wbc->nr_to_write);
+	percpu_up_read(&sbi->s_journal_flag_rwsem);
+	return ret;
+}
+*/
+
+/*
+static int CLUSTER_ext4_da_write_begin(struct file *file, struct address_space *mapping,
+			       loff_t pos, unsigned len, unsigned flags,
+			       struct page **pagep, void **fsdata)
+{
+	int ret, retries = 0;
+	struct page *page;
+	pgoff_t index;
+	struct inode *inode = mapping->host;
+	handle_t *handle;
+
+	index = pos >> PAGE_SHIFT;
+
+	if (ext4_nonda_switch(inode->i_sb)) {
+		*fsdata = (void *)FALL_BACK_TO_NONDELALLOC;
+		return ext4_write_begin(file, mapping, pos,
+					len, flags, pagep, fsdata);
+	}
+	*fsdata = (void *)0;
+	trace_ext4_da_write_begin(inode, pos, len, flags);
+
+	if (ext4_test_inode_state(inode, EXT4_STATE_MAY_INLINE_DATA)) {
+		ret = ext4_da_write_inline_data_begin(mapping, inode,
+						      pos, len, flags,
+						      pagep, fsdata);
+		if (ret < 0)
+			return ret;
+		if (ret == 1)
+			return 0;
+	}
+
+retry_grab:
+	page = CLUSTER_grab_cache_page_write_begin(mapping, index, flags);
+	if (!page)
+		return -ENOMEM;
+	unlock_page(page);
+
+retry_journal:
+	handle = ext4_journal_start(inode, EXT4_HT_WRITE_PAGE,
+				ext4_da_write_credits(inode, pos, len));
+	if (IS_ERR(handle)) {
+		put_page(page);
+		return PTR_ERR(handle);
+	}
+
+	lock_page(page);
+
+////
+	if (page->mapping != mapping) {
+		// The page got truncated from under us
+		unlock_page(page);
+		page_cache_release(page);
+		ext4_journal_stop(handle);
+		goto retry_grab;
+	}
+	// In case writeback began while the page was unlocked
+	wait_for_stable_page(page);
+//////
+
+#ifdef CONFIG_EXT4_FS_ENCRYPTION
+	ret = ext4_block_write_begin(page, pos, len,
+				     ext4_da_get_block_prep);
+#else
+	ret = __block_write_begin(page, pos, len, ext4_da_get_block_prep);
+#endif
+	if (ret < 0) {
+		unlock_page(page);
+		ext4_journal_stop(handle);
+		if (pos + len > inode->i_size)
+			ext4_truncate_failed_write(inode);
+
+		if (ret == -ENOSPC &&
+		    ext4_should_retry_alloc(inode->i_sb, &retries))
+			goto retry_journal;
+
+		//page_cache_release(page);
+		return ret;
+	}
+
+	*pagep = page;
+	return ret;
+}
+*/
+
+static int CLUSTER_ext4_da_write_end(struct file *file,
+			     struct address_space *mapping,
+			     loff_t pos, unsigned len, unsigned copied,
+			     struct page *page, void *fsdata)
+{
+	struct inode *inode = mapping->host;
+	int ret = 0, ret2;
+	handle_t *handle = ext4_journal_current_handle();
+	loff_t new_i_size;
+	unsigned long start, end;
+	int write_mode = (int)(unsigned long)fsdata;
+
+	if (write_mode == FALL_BACK_TO_NONDELALLOC)
+		return ext4_write_end(file, mapping, pos,
+				      len, copied, page, fsdata);
+
+	trace_ext4_da_write_end(inode, pos, len, copied);
+	start = pos & (PAGE_SIZE - 1);
+	end = start + copied - 1;
+
+	/*
+	 * generic_write_end() will run mark_inode_dirty() if i_size
+	 * changes.  So let's piggyback the i_disksize mark_inode_dirty
+	 * into that.
+	 */
+	new_i_size = pos + copied;
+	if (copied && new_i_size > EXT4_I(inode)->i_disksize) {
+		if (ext4_has_inline_data(inode) ||
+		    ext4_da_should_update_i_disksize(page, end)) {
+			ext4_update_i_disksize(inode, new_i_size);
+			/* We need to mark inode dirty even if
+			 * new_i_size is less that inode->i_size
+			 * bu greater than i_disksize.(hint delalloc)
+			 */
+			ext4_mark_inode_dirty(handle, inode);
+		}
+	}
+
+	if (write_mode != CONVERT_INLINE_DATA &&
+	    ext4_test_inode_state(inode, EXT4_STATE_MAY_INLINE_DATA) &&
+	    ext4_has_inline_data(inode))
+		ret2 = ext4_da_write_inline_data_end(inode, pos, len, copied,
+						     page);
+	else
+		ret2 = generic_write_end(file, mapping, pos, len, copied,
+							page, fsdata);
+
+	copied = ret2;
+	if (ret2 < 0)
+		ret = ret2;
+	ret2 = ext4_journal_stop(handle);
+	if (!ret)
+		ret = ret2;
+
+	return ret ? ret : copied;
+}
+
+
+

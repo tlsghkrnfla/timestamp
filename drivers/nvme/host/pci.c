@@ -47,6 +47,10 @@
 #include <uapi/linux/nvme_ioctl.h>
 #include "nvme.h"
 
+#include <linux/cluster.h>
+#define NUM_CORE num_present_cpus()
+#define NUM_PAGE 64
+
 #define NVME_MINORS		(1U << MINORBITS)
 #define NVME_Q_DEPTH		1024
 #define NVME_AQ_DEPTH		256
@@ -102,6 +106,15 @@ struct async_cmd_info {
 	void *ctx;
 };
 
+struct CLUSTER_nvme_request {
+	int page_size;
+	int core_id;
+	struct nvme_command cmd;
+	struct nvme_iod *iod;
+	struct bio *bio;
+	CLUSTER_end_io_t *end_io;
+};
+
 /*
  * An NVM Express queue.  Each device has at least two (one for admin
  * commands and one for I/O commands).
@@ -127,6 +140,8 @@ struct nvme_queue {
 	u8 cq_phase;
 	u8 cqe_seen;
 	struct async_cmd_info cmdinfo;
+
+	struct CLUSTER_nvme_request *nvme_reqs;
 };
 
 /*
@@ -1150,7 +1165,13 @@ static int adapter_alloc_cq(struct nvme_dev *dev, u16 qid,
 						struct nvme_queue *nvmeq)
 {
 	struct nvme_command c;
-	int flags = NVME_QUEUE_PHYS_CONTIG | NVME_CQ_IRQ_ENABLED;
+	int flags;
+
+	if (qid > NUM_CORE) {
+		flags = NVME_QUEUE_PHYS_CONTIG;
+	} else {
+		flags = NVME_QUEUE_PHYS_CONTIG | NVME_CQ_IRQ_ENABLED;
+	}
 
 	/*
 	 * Note: we (ab)use the fact the the prp fields survive if no data
@@ -1409,6 +1430,15 @@ static void nvme_free_queues(struct nvme_dev *dev, int lowest)
 		dev->queues[i] = NULL;
 		nvme_free_queue(nvmeq);
 	}
+
+	for (i = NUM_CORE + 1; ; i++) {
+		if (dev->queues[i]) {
+			kfree(dev->queues[i]->nvme_reqs->iod);
+			kfree(dev->queues[i]->nvme_reqs);
+			nvme_free_queue(dev->queues[i]);
+			dev->queues[i] = NULL;
+		}
+	}
 }
 
 /**
@@ -1508,6 +1538,8 @@ static int nvme_alloc_sq_cmds(struct nvme_dev *dev, struct nvme_queue *nvmeq,
 	return 0;
 }
 
+static struct CLUSTER_nvme_operations CLUSTER_nvme_ops;
+
 static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 							int depth)
 {
@@ -1539,6 +1571,20 @@ static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 	/* make sure queue descriptor is set before queue count, for kthread */
 	mb();
 	dev->queue_count++;
+
+	if (qid > NUM_CORE) {
+		struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, qid - NUM_CORE - 1);
+		int i;
+
+		table->nvmeq = (void *)nvmeq;
+		table->CLUSTER_nvme_ops = &CLUSTER_nvme_ops;
+		nvmeq->nvme_reqs = (struct CLUSTER_nvme_request *)kmalloc
+							(sizeof(struct CLUSTER_nvme_request) * 64, GFP_ATOMIC);
+		for (i = 0; i < 64; i++) {
+			nvmeq->nvme_reqs[i].iod = __nvme_alloc_iod(64, 64 * PAGE_SIZE,
+																dev, 0, GFP_ATOMIC);
+		}
+	}
 
 	return nvmeq;
 
@@ -1589,9 +1635,11 @@ static int nvme_create_queue(struct nvme_queue *nvmeq, int qid)
 	if (result < 0)
 		goto release_cq;
 
-	result = queue_request_irq(dev, nvmeq, nvmeq->irqname);
-	if (result < 0)
-		goto release_sq;
+	if (qid <= NUM_CORE) {
+		result = queue_request_irq(dev, nvmeq, nvmeq->irqname);
+		if (result < 0)
+			goto release_sq;
+	}
 
 	nvme_init_queue(nvmeq, qid);
 	return result;
@@ -2338,7 +2386,7 @@ static void nvme_create_io_queues(struct nvme_dev *dev)
 {
 	unsigned i;
 
-	for (i = dev->queue_count; i <= dev->max_qid; i++)
+	for (i = dev->queue_count; i <= dev->max_qid + NUM_CORE; i++)
 		if (!nvme_alloc_queue(dev, i, dev->q_depth))
 			break;
 
@@ -2347,6 +2395,11 @@ static void nvme_create_io_queues(struct nvme_dev *dev)
 			nvme_free_queues(dev, i);
 			break;
 		}
+
+	dev->queue_count -= NUM_CORE;
+	dev->online_queues -= NUM_CORE;
+	printk("[CLUSTER] NVMe queue: %d + polling NVMe queue: %d\n",
+										dev->queue_count, NUM_CORE);
 }
 
 static int set_queue_count(struct nvme_dev *dev, int count)
@@ -2431,6 +2484,10 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 
 	nr_io_queues = num_possible_cpus();
 	result = set_queue_count(dev, nr_io_queues);
+
+	printk("[CLUSTER] num_possible_cpus: %d / Device's queue cap: %d\n",
+													nr_io_queues, result);
+
 	if (result <= 0)
 		return result;
 	if (result < nr_io_queues)
@@ -2499,7 +2556,7 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	}
 
 	/* Free previously allocated queues that are no longer usable */
-	nvme_free_queues(dev, nr_io_queues + 1);
+	//nvme_free_queues(dev, nr_io_queues + 1);
 	nvme_create_io_queues(dev);
 
 	return 0;
@@ -3130,6 +3187,9 @@ static const struct file_operations nvme_dev_fops = {
 	.compat_ioctl	= nvme_dev_ioctl,
 };
 
+static void CLUSTER_pagelist_alloc(struct nvme_dev *);
+static void CLUSTER_pagelist_dealloc(struct nvme_dev *);
+
 static void nvme_probe_work(struct work_struct *work)
 {
 	struct nvme_dev *dev = container_of(work, struct nvme_dev, probe_work);
@@ -3185,6 +3245,8 @@ static void nvme_probe_work(struct work_struct *work)
 		nvme_unfreeze_queues(dev);
 		nvme_dev_add(dev);
 	}
+
+	CLUSTER_pagelist_alloc(dev);
 
 	return;
 
@@ -3308,7 +3370,7 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 							GFP_KERNEL, node);
 	if (!dev->entry)
 		goto free;
-	dev->queues = kzalloc_node((num_possible_cpus() + 1) * sizeof(void *),
+	dev->queues = kzalloc_node((num_possible_cpus() + 1 + NUM_CORE) * sizeof(void *),
 							GFP_KERNEL, node);
 	if (!dev->queues)
 		goto free;
@@ -3381,6 +3443,8 @@ static void nvme_shutdown(struct pci_dev *pdev)
 static void nvme_remove(struct pci_dev *pdev)
 {
 	struct nvme_dev *dev = pci_get_drvdata(pdev);
+
+	CLUSTER_pagelist_dealloc(dev);
 
 	spin_lock(&dev_list_lock);
 	list_del_init(&dev->node);
@@ -3516,6 +3580,339 @@ static void __exit nvme_exit(void)
 	BUG_ON(nvme_thread && !IS_ERR(nvme_thread));
 	_nvme_check_size();
 }
+
+static inline int CLUSTER_pagelist_dma_mapping(struct nvme_dev *dev,
+											struct list_head *head, int dir)
+{
+	struct list_head *p;
+
+	if (dir) {
+		list_for_each_prev(p, head) {
+			struct page *page = list_entry(p, struct page, lru);
+			struct scatterlist *sg = kmalloc(sizeof(struct scatterlist), GFP_ATOMIC);
+			page->mapping = (struct address_space *)sg;
+			sg_init_table(sg, 1);
+			sg_set_page(sg, page, PAGE_SIZE, 0);
+			dma_map_sg(dev->dev, sg, 1, DMA_TO_DEVICE);
+		}
+	} else {
+		list_for_each_prev(p, head) {
+			struct page *page = list_entry(p, struct page, lru);
+			struct scatterlist *sg = kmalloc(sizeof(struct scatterlist), GFP_ATOMIC);
+			page->mapping = (struct address_space *)sg;
+			sg_init_table(sg, 1);
+			sg_set_page(sg, page, PAGE_SIZE, 0);
+			dma_map_sg(dev->dev, sg, 1, DMA_FROM_DEVICE);
+		}
+	}
+
+	return 0;
+}
+
+int CLUSTER_sglist_dma_unmapping(struct nvme_dev *dev, struct CLUSTER_table *table)
+{
+
+/*
+	struct list_head *dma_unmap_list = per_cpu_ptr(HP_struct.pcpu_dmalist, core_num);
+	struct nvme_iod *iod;
+	struct scatterlist *sg = NULL;
+	int i;
+
+	while (!list_empty(dma_unmap_list)) {
+		iod = list_last_entry(dma_unmap_list, struct nvme_iod, list);
+		list_del(&iod->list);
+		sg = NULL;
+
+		for (i = 0; i < iod->nents; i++) {
+			if (!sg)
+				sg = iod->sg;
+			else
+				sg = sg_next(sg);
+			dma_unmap_sg(dev->dev, sg, 1, DMA_FROM_DEVICE);
+		}
+		HP_nvme_free_iod(dev, iod);
+	}
+*/
+
+	return 0;
+}
+
+static void CLUSTER_pagelist_alloc(struct nvme_dev *dev)
+{
+	struct CLUSTER_table *table;
+	struct list_head *pagelist;
+	struct page *page;
+	int i, cpu_num;
+
+	for_each_possible_cpu(cpu_num) {
+		if (!cpumask_test_cpu(cpu_num, cpu_online_mask))
+			continue;
+		table = per_cpu_ptr(&CLUSTER_tables, cpu_num);
+		pagelist = &table->pagelist;
+		INIT_LIST_HEAD(pagelist);
+		for (i = 0; i < NUM_PAGE; i++) {
+			page = alloc_pages(GFP_HIGHUSER_MOVABLE|__GFP_COLD|__GFP_NORETRY|__GFP_NOWARN, 0);
+			list_add(&page->lru, pagelist);
+		}
+		CLUSTER_pagelist_dma_mapping(dev, pagelist, 0);
+
+/*
+		pagelist = &table->write_pagelist;
+		INIT_LIST_HEAD(pagelist);
+		for (i = 0; i < NUM_PAGE; i++) {
+			page = alloc_pages(GFP_HIGHUSER_MOVABLE|__GFP_COLD|__GFP_NORETRY|__GFP_NOWARN|__GFP_WRITE, 0);
+			list_add(&page->lru, pagelist);
+		}
+		CLUSTER_pagelist_dma_mapping(dev, pagelist, 1);
+*/
+
+		pagelist = &table->iodlist;
+		INIT_LIST_HEAD(pagelist);
+	}
+
+	return;
+}
+
+static void CLUSTER_pagelist_dealloc(struct nvme_dev *dev)
+{
+	struct CLUSTER_table *table;
+	struct list_head *pagelist;
+	struct page *page;
+	int cpu_num;
+
+	for_each_possible_cpu(cpu_num) {
+		if (!cpumask_test_cpu(cpu_num, cpu_online_mask))
+			continue;
+		table = per_cpu_ptr(&CLUSTER_tables, cpu_num);
+		pagelist = &table->pagelist;
+		while (!list_empty(pagelist)) {
+			page = list_last_entry(pagelist, struct page, lru);
+			dma_unmap_sg(dev->dev, (struct scatterlist *)page->mapping,
+													1, DMA_FROM_DEVICE);
+			kfree(page->mapping);
+			list_del(&page->lru);
+			__free_pages(page, 0);
+		}
+		CLUSTER_sglist_dma_unmapping(dev, table);
+	}
+
+	return;
+}
+
+static void CLUSTER_req_completion(struct nvme_queue *nvmeq,
+			struct CLUSTER_nvme_request *req, struct nvme_completion *cpe)
+{
+	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+	int error = 0;
+	u16 status;	
+
+	//status = le16_to_cpup(&cpe->status) >> 1;
+	//if (status)
+	//	printk(KERN_ERR "[CLUSTER] CLUSTER_req_completion status error\n");
+
+	req->end_io(req->bio, error);
+	list_add(&req->iod->list, &table->iodlist);
+
+	//req->data->req_num--;
+}
+
+static inline struct CLUSTER_nvme_request *get_req_with_tag(struct nvme_queue *nvmeq,
+														unsigned int tag)
+{
+	return &nvmeq->nvme_reqs[tag % 64];
+}
+
+static void CLUSTER_nvme_process_cq(struct nvme_queue *nvmeq, unsigned int *tag)
+{
+	u16 head = nvmeq->cq_head;
+	u16 phase = nvmeq->cq_phase;
+	struct nvme_completion cqe = nvmeq->cqes[head];
+
+	nvmeq->sq_head = le16_to_cpu(cqe.sq_head);
+	if (++head == nvmeq->q_depth) {
+		head = 0;
+		phase = !phase;
+	}
+	if (tag && *tag == cqe.command_id)
+		*tag = -1;
+
+	CLUSTER_req_completion(nvmeq, get_req_with_tag(nvmeq, cqe.command_id), &cqe);
+
+	if (head == nvmeq->cq_head && phase == nvmeq->cq_phase)
+		return;
+
+	if (likely(nvmeq->cq_vector >= 0))
+		writel(head, nvmeq->q_db + nvmeq->dev->db_stride);
+	nvmeq->cq_head = head;
+	nvmeq->cq_phase = phase;
+
+	nvmeq->cqe_seen = 1;
+}
+
+int CLUSTER_pre_dma_mapping(struct nvme_dev *dev, struct list_head *pagelist,
+						struct list_head *head, int req_size)
+{
+	while (!list_empty(head)) {
+		struct page *page = list_last_entry(head, struct page, lru);
+		struct scatterlist *sg = kmalloc(sizeof(struct scatterlist), GFP_ATOMIC);
+
+		list_del(&page->lru);
+		page->mapping = (struct address_space *)sg;
+		sg_init_table(sg, 1);
+		sg_set_page(sg, page, PAGE_SIZE, 0);
+		if (!dma_map_sg(dev->dev, sg, 1, DMA_FROM_DEVICE))
+			printk(KERN_ERR "dma_map_sg error!!!\n");
+		//spin_lock_irq(&cluster_nvme->percpu_lock[core_num]);
+		list_add(&page->lru, pagelist);
+		//spin_unlock_irq(&cluster_nvme->percpu_lock[core_num]);
+	}
+
+	return 0;
+}
+
+int CLUSTER_post_dma_unmapping(struct nvme_dev *dev, struct list_head *iodlist)
+{
+	struct nvme_iod *iod;
+	struct scatterlist *sg = NULL;
+	int i;
+
+	while (!list_empty(iodlist)) {
+		iod = list_last_entry(iodlist, struct nvme_iod, list);
+		list_del(&iod->list);
+		sg = NULL;
+
+		for (i = 0; i < iod->nents; i++) {
+			if (!sg)
+				sg = iod->sg;
+			else
+				sg = sg_next(sg);
+			dma_unmap_sg(dev->dev, sg, 1, DMA_FROM_DEVICE);
+		}
+		nvme_free_iod(dev, iod);
+	}
+
+	return 0;
+}
+
+void CLUSTER_set_sg(struct scatterlist **sg, struct CLUSTER_nvme_request *req,
+				struct bio *bio)
+{
+	int count = 0;
+
+	while (1) {
+		struct page *page = bio->bi_io_vec[count].bv_page;
+
+		if (!(*sg))
+			*sg = req->iod->sg;
+		else {
+			sg_unmark_end(*sg);
+			*sg = sg_next(*sg);
+		}
+		sg_set_page(*sg, page, PAGE_SIZE, 0);
+		(*sg)->dma_address = ((struct scatterlist *)page->mapping)->dma_address;
+		(*sg)->dma_length = ((struct scatterlist *)page->mapping)->dma_length;
+
+		count++;
+		if (count == bio->bi_vcnt)
+			break;
+	}
+}
+
+int CLUSTER_overlap_dd(struct notifier_block *self, unsigned long val, void *data)
+{
+	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+	struct task_overlap_data *overlap_data = (struct task_overlap_data *)data;
+
+	CLUSTER_pre_dma_mapping(((struct nvme_queue *)table->nvmeq)->dev,
+					&table->pagelist, &overlap_data->pagelist, overlap_data->page_count);
+	CLUSTER_post_dma_unmapping(((struct nvme_queue *)table->nvmeq)->dev, &table->iodlist);
+	//CLUSTER_post_dma_unmapping(nvmeq->dev, &table->iodlist);
+
+	return 0;
+}
+
+int nvme_polling(struct notifier_block *self, unsigned long val, void *data)
+{
+	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+	struct task_overlap_data *overlap_data = (struct task_overlap_data *)data;
+	struct nvme_queue *nvmeq = (struct nvme_queue *)table->nvmeq;
+
+	while (1) {
+		if ((le16_to_cpu(nvmeq->cqes[nvmeq->cq_head].status) & 1) == nvmeq->cq_phase) {
+			//spin_lock_irq(&qpair->q_lock);
+			CLUSTER_nvme_process_cq(nvmeq, &overlap_data->tag);
+			//spin_unlock_irq(&qpair->q_lock);
+
+			if (overlap_data->tag == -1)
+				return 0;
+		}
+		//if (!data->req_num)
+		//	break;
+	}
+
+	//__asm__ volatile("rdtsc" : "=a" (lo), "=d" (hi));
+	//NVME_latency.b = ((unsigned long long)hi << 32) | lo;
+
+	return 0;
+}
+
+struct notifier_block overlap_dd_chain = {
+	.notifier_call = CLUSTER_overlap_dd,
+	.priority = 2,
+};
+struct notifier_block nvme_poll_chain = {
+	.notifier_call = nvme_polling,
+	.priority = 0,
+};
+
+int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
+{
+	struct task_overlap_data *overlap_data = &current->overlap_data;
+	struct nvme_queue *nvmeq = (struct nvme_queue *)table->nvmeq;
+	struct CLUSTER_nvme_request *req = NULL;
+	struct scatterlist *sg = NULL;
+
+	while (1) {
+		req = &nvmeq->nvme_reqs[nvmeq->sq_tail % 64];
+		sg_init_table(req->iod->sg, bio->bi_vcnt);
+		req->iod->nents = bio->bi_vcnt;
+		req->end_io = overlap_data->end_io;
+		req->bio = bio;
+
+		sg = NULL;
+		CLUSTER_set_sg(&sg, req, bio);
+		nvme_setup_prps(nvmeq->dev, req->iod, bio->bi_vcnt * PAGE_SIZE, GFP_ATOMIC);
+
+		overlap_data->tag = nvmeq->sq_tail;
+
+		req->cmd.rw.opcode = nvme_cmd_read;
+		req->cmd.rw.command_id = nvmeq->sq_tail;
+		req->cmd.rw.nsid = cpu_to_le32(1);
+		req->cmd.rw.slba = cpu_to_le64((bio->bi_iter.bi_sector + 256) * 8);
+		req->cmd.rw.prp1 = cpu_to_le64(sg_dma_address(req->iod->sg));
+		req->cmd.rw.prp2 = cpu_to_le64(req->iod->first_dma);
+		req->cmd.rw.length = cpu_to_le16((bio->bi_vcnt * 8) - 1);
+		req->cmd.rw.control = 0;
+		__nvme_submit_cmd(nvmeq, &req->cmd);
+
+		if (!bio->bi_next)
+			break;
+		else
+			bio = bio->bi_next;
+	}
+
+	//printk("[CLUSTER] CLUSTER_direct_read after submit\n");
+
+	atomic_notifier_chain_register(current->dd_chain, &overlap_dd_chain);
+	atomic_notifier_chain_register(current->poll_chain, &nvme_poll_chain);
+
+	return 0;
+}
+
+static struct CLUSTER_nvme_operations CLUSTER_nvme_ops = {
+	.CLUSTER_direct_read = nvme_direct_read,
+	//.CLUSTER_direct_write = nvme_direct_write,
+};
 
 MODULE_AUTHOR("Matthew Wilcox <willy@linux.intel.com>");
 MODULE_LICENSE("GPL");

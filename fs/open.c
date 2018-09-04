@@ -34,6 +34,8 @@
 
 #include "internal.h"
 
+#include "./ext4/ext4.h"
+
 int do_truncate(struct dentry *dentry, loff_t length, unsigned int time_attrs,
 	struct file *filp)
 {
@@ -1027,6 +1029,12 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 		} else {
 			fsnotify_open(f);
 			fd_install(fd, f);
+
+			if (flags & O_CLUSTER) {
+				f->f_flags |= O_CLUSTER;
+				if (CLUSTER_extent_preload(f->f_mapping))
+					printk(KERN_ERR "[CLUSTER] CLUSTER_extent_preload error\n");
+			}
 		}
 	}
 	putname(tmp);

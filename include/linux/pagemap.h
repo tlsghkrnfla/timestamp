@@ -458,6 +458,31 @@ static inline void lock_page(struct page *page)
 		__lock_page(page);
 }
 
+static inline void __set_page_poll(struct page *page)
+{
+	__set_bit(PG_poll, &page->flags);
+}
+static inline void __clear_page_poll(struct page *page)
+{
+	__clear_bit(PG_poll, &page->flags);
+}
+static inline int poll_page(struct page *page)
+{
+	return test_bit(PG_poll, &page->flags);
+}
+static inline void __set_page_oncache(struct page *page)
+{
+	__set_bit(PG_oncache, &page->flags);
+}
+static inline void __clear_page_oncache(struct page *page)
+{
+	__clear_bit(PG_oncache, &page->flags);
+}
+static inline int oncache_page(struct page *page)
+{
+	return test_bit(PG_oncache, &page->flags);
+}
+
 /*
  * lock_page_killable is like lock_page but can be interrupted by fatal
  * signals.  It returns 0 if it locked the page and -EINTR if it was
@@ -466,8 +491,32 @@ static inline void lock_page(struct page *page)
 static inline int lock_page_killable(struct page *page)
 {
 	might_sleep();
-	if (!trylock_page(page))
+
+	if (!trylock_page(page)) {
+		if (poll_page(page)) {
+			if (current->pc_chain->head) {
+				__clear_page_poll(page);
+				atomic_notifier_call_chain(current->pc_chain, 0,
+											&current->overlap_data);
+				atomic_notifier_call_chain(current->dd_chain, 0,
+											&current->overlap_data);
+				current->pc_chain->head = NULL;
+				current->dd_chain->head = NULL;
+			}
+			while (!trylock_page(page)) {
+				if (current->poll_chain->head) {
+					atomic_notifier_call_chain(current->poll_chain, 0,
+												&current->overlap_data);
+					current->poll_chain->head = NULL;
+
+					put_cpu_var(CLUSTER_tables);
+				}
+			}
+			return 0;
+		}
 		return __lock_page_killable(page);
+	}
+
 	return 0;
 }
 
