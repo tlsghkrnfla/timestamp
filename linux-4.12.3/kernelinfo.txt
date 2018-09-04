@@ -1,0 +1,7 @@
+
+Linux Kernel v4.12.3
+
+git server: joonpc.skku.edu/gitlab/gyusun/cluster
+
+status: master / read completion
+
