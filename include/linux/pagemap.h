@@ -364,6 +364,8 @@ unsigned find_get_pages_tag(struct address_space *mapping, pgoff_t *index,
 
 struct page *grab_cache_page_write_begin(struct address_space *mapping,
 			pgoff_t index, unsigned flags);
+struct page *CLUSTER_grab_cache_page_write_begin(struct address_space *mapping,
+			pgoff_t index, unsigned flags);
 
 /*
  * Returns locked page at given index in given cache, creating it if needed.
@@ -494,12 +496,15 @@ static inline int lock_page_killable(struct page *page)
 
 	if (!trylock_page(page)) {
 		if (poll_page(page)) {
-			if (current->pc_chain->head) {
+			if (current->vfs_chain->head) {
 				__clear_page_poll(page);
+				atomic_notifier_call_chain(current->vfs_chain, 0,
+											&current->overlap_data);
 				atomic_notifier_call_chain(current->pc_chain, 0,
 											&current->overlap_data);
 				atomic_notifier_call_chain(current->dd_chain, 0,
 											&current->overlap_data);
+				current->vfs_chain->head = NULL;
 				current->pc_chain->head = NULL;
 				current->dd_chain->head = NULL;
 			}

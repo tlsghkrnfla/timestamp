@@ -2815,3 +2815,17 @@ void wait_for_stable_page(struct page *page)
 		wait_on_page_writeback(page);
 }
 EXPORT_SYMBOL_GPL(wait_for_stable_page);
+
+int CLUSTER_do_writepages(struct address_space *mapping, struct writeback_control *wbc)
+{
+	int ret;
+
+	if (wbc->nr_to_write <= 0)
+		return 0;
+	if (mapping->a_ops->writepages)
+		ret = mapping->a_ops->CLUSTER_writepages(mapping, wbc);
+	else
+		ret = generic_writepages(mapping, wbc);
+	return ret;
+}
+

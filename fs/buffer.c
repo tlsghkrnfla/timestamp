@@ -3427,3 +3427,97 @@ void __init buffer_init(void)
 	max_buffer_heads = nrpages * (PAGE_SIZE / sizeof(struct buffer_head));
 	hotcpu_notifier(buffer_cpu_notify, 0);
 }
+
+struct bio *CLUSTER_make_bh_to_bio(int rw, struct buffer_head *bh)
+{
+	struct bio *bio = NULL;
+
+	BUG_ON(!buffer_locked(bh));
+	BUG_ON(!buffer_mapped(bh));
+	BUG_ON(!bh->b_end_io);
+	BUG_ON(buffer_delay(bh));
+	BUG_ON(buffer_unwritten(bh));
+
+	if (test_set_buffer_req(bh) && (rw == WRITE))
+		clear_buffer_write_io_error(bh);
+
+	bio = bio_alloc(GFP_NOIO, 1);
+
+	bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
+	bio->bi_bdev = bh->b_bdev;
+
+	bio_add_page(bio, bh->b_page, bh->b_size, bh_offset(bh));
+	BUG_ON(bio->bi_iter.bi_size != bh->b_size);
+
+	bio->bi_end_io = end_bio_bh_io_sync;
+	bio->bi_private = bh;
+	bio->bi_flags |= 0;
+
+	/* Take care of bh's that straddle the end of the device */
+	guard_bio_eod(rw, bio);
+
+	if (buffer_meta(bh))
+		rw |= REQ_META;
+	if (buffer_prio(bh))
+		rw |= REQ_PRIO;
+	bio->bi_rw |= rw;
+	//bio_set_op_attrs(bio, op, op_flags);
+
+	return bio;
+}
+
+int CLUSTER_submit_bh(int rw, struct buffer_head *bh)
+{
+	//struct CLUSTER_table *table = &get_cpu_var(CLUSTER_tables);
+	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+	struct bio *bio;
+
+	BUG_ON(!buffer_locked(bh));
+	BUG_ON(!buffer_mapped(bh));
+	BUG_ON(!bh->b_end_io);
+	BUG_ON(buffer_delay(bh));
+	BUG_ON(buffer_unwritten(bh));
+
+	if (test_set_buffer_req(bh) && (rw == WRITE))
+		clear_buffer_write_io_error(bh);
+
+	bio = bio_alloc(GFP_NOIO, 1);
+	bio->bi_next = NULL;
+	bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
+	bio->bi_bdev = bh->b_bdev;
+
+	bio_add_page(bio, bh->b_page, bh->b_size, bh_offset(bh));
+	BUG_ON(bio->bi_iter.bi_size != bh->b_size);
+
+	bio->bi_end_io = end_bio_bh_io_sync;
+	bio->bi_private = bh;
+
+	/* Take care of bh's that straddle the end of the device */
+	guard_bio_eod(rw, bio);
+
+	if (buffer_meta(bh))
+		rw |= REQ_META;
+	if (buffer_prio(bh))
+		rw |= REQ_PRIO;
+	bio->bi_rw |= rw;
+	//bio_set_op_attrs(bio, op, op_flags);
+
+	table->CLUSTER_nvme_ops->CLUSTER_direct_write(table, bio);
+
+	//put_cpu_var(CLUSTER_tables);
+
+	return 0;
+}
+EXPORT_SYMBOL(CLUSTER_submit_bh);
+
+int CLUSTER_submit_bio(int op, struct bio *bio)
+{
+	//struct CLUSTER_table *table = &get_cpu_var(CLUSTER_tables);
+	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+
+	table->CLUSTER_nvme_ops->CLUSTER_direct_write(table, bio);
+
+	//put_cpu_var(CLUSTER_tables);
+}
+EXPORT_SYMBOL(CLUSTER_submit_bio);
+

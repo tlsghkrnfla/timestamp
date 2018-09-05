@@ -1,7 +1,5 @@
 
 18.09.04
 
-CLUSTER 4.4.7 read_optimized_backup kernel
-
-for NVMe_request rollback
+CLUSTER 4.4.7 read_optimized kernel
 

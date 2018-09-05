@@ -46,6 +46,8 @@
 
 #include <asm/mman.h>
 
+ssize_t CLUSTER_generic_perform_write(struct file *, struct iov_iter *, loff_t);
+
 /*
  * Shared mappings implemented 30.11.1994. It's not fully working yet,
  * though.
@@ -2657,7 +2659,10 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			 */
 		}
 	} else {
-		written = generic_perform_write(file, from, iocb->ki_pos);
+		if (file->f_flags & O_CLUSTER)
+			written = CLUSTER_generic_perform_write(file, from, iocb->ki_pos);
+		else
+			written = generic_perform_write(file, from, iocb->ki_pos);
 		if (likely(written > 0))
 			iocb->ki_pos += written;
 	}
@@ -2949,13 +2954,19 @@ out:
 }
 
 ssize_t CLUSTER_generic_perform_write(struct file *file,
-				struct iov_iter *i, loff_t pos)
+							struct iov_iter *i, loff_t pos)
 {
 	struct address_space *mapping = file->f_mapping;
 	const struct address_space_operations *a_ops = mapping->a_ops;
 	long status = 0;
 	ssize_t written = 0;
 	unsigned int flags = 0;
+
+	/*
+	 * Copies from kernel address space cannot fail (NFSD is a big user).
+	 */
+	if (!iter_is_iovec(i))
+		flags |= AOP_FLAG_UNINTERRUPTIBLE;
 
 	do {
 		struct page *page;
@@ -2964,8 +2975,8 @@ ssize_t CLUSTER_generic_perform_write(struct file *file,
 		size_t copied;		/* Bytes copied from user */
 		void *fsdata;
 
-		offset = (pos & (PAGE_SIZE - 1));
-		bytes = min_t(unsigned long, PAGE_SIZE - offset,
+		offset = (pos & (PAGE_CACHE_SIZE - 1));
+		bytes = min_t(unsigned long, PAGE_CACHE_SIZE - offset,
 						iov_iter_count(i));
 
 again:
@@ -2989,8 +3000,8 @@ again:
 			break;
 		}
 
-		//status = a_ops->CLUSTER_write_begin(file, mapping, pos, bytes, flags,
-		//				&page, &fsdata);
+		status = a_ops->CLUSTER_write_begin(file, mapping, pos, bytes, flags,
+						&page, &fsdata);
 		if (unlikely(status < 0))
 			break;
 
@@ -3000,8 +3011,8 @@ again:
 		copied = iov_iter_copy_from_user_atomic(page, i, offset, bytes);
 		flush_dcache_page(page);
 
-		//status = a_ops->CLUSTER_write_end(file, mapping, pos, bytes, copied,
-		//				page, fsdata);
+		status = a_ops->CLUSTER_write_end(file, mapping, pos, bytes, copied,
+						page, fsdata);
 		if (unlikely(status < 0))
 			break;
 		copied = status;
@@ -3018,7 +3029,7 @@ again:
 			 * because not all segments in the iov can be copied at
 			 * once without a pagefault.
 			 */
-			bytes = min_t(unsigned long, PAGE_SIZE - offset,
+			bytes = min_t(unsigned long, PAGE_CACHE_SIZE - offset,
 						iov_iter_single_seg_count(i));
 			goto again;
 		}
@@ -3047,7 +3058,7 @@ repeat:
 	if (fgp_flags & FGP_LOCK) {
 		if (fgp_flags & FGP_NOWAIT) {
 			if (!trylock_page(page)) {
-				put_page(page);
+				page_cache_release(page);
 				return NULL;
 			}
 		} else {
@@ -3057,7 +3068,7 @@ repeat:
 		/* Has the page been truncated? */
 		if (unlikely(page->mapping != mapping)) {
 			unlock_page(page);
-			put_page(page);
+			page_cache_release(page);
 			goto repeat;
 		}
 		VM_BUG_ON_PAGE(page->index != offset, page);
@@ -3088,7 +3099,7 @@ no_page:
 		err = add_to_page_cache_lru(page, mapping, offset,
 				gfp_mask & GFP_RECLAIM_MASK);
 		if (unlikely(err)) {
-			put_page(page);
+			page_cache_release(page);
 			page = NULL;
 			if (err == -EEXIST)
 				goto repeat;
@@ -3100,23 +3111,24 @@ no_page:
 EXPORT_SYMBOL(CLUSTER_pagecache_get_page);
 
 struct page *CLUSTER_grab_cache_page_write_begin(struct address_space *mapping,
-					pgoff_t index, unsigned flags)
+						pgoff_t index, unsigned flags)
 {
 	struct page *page;
-	int fgp_flags = FGP_LOCK|FGP_WRITE|FGP_CREAT;
+	int fgp_flags = FGP_LOCK|FGP_ACCESSED|FGP_WRITE|FGP_CREAT;
 
 	if (flags & AOP_FLAG_NOFS)
 		fgp_flags |= FGP_NOFS;
 
 	page = CLUSTER_pagecache_get_page(mapping, index, fgp_flags,
-			mapping_gfp_mask(mapping));
+				mapping_gfp_mask(mapping));
+	if (page)
+		wait_for_stable_page(page);
 
 	return page;
 }
 EXPORT_SYMBOL(CLUSTER_grab_cache_page_write_begin);
 
-// CLUSTER
-int CLUSTER__filemap_fdatawrite_range(struct address_space *mapping, loff_t start,
+int CLUSTER_filemap_fdatawrite_range(struct address_space *mapping, loff_t start,
 				loff_t end, int sync_mode)
 {
 	int ret;
@@ -3131,7 +3143,7 @@ int CLUSTER__filemap_fdatawrite_range(struct address_space *mapping, loff_t star
 		return 0;
 
 	wbc_attach_fdatawrite_inode(&wbc, mapping->host);
-	//ret = CLUSTER_do_writepages(mapping, &wbc);
+	ret = CLUSTER_do_writepages(mapping, &wbc);
 	wbc_detach_inode(&wbc);
 	return ret;
 }
@@ -3139,8 +3151,8 @@ int CLUSTER__filemap_fdatawrite_range(struct address_space *mapping, loff_t star
 static int CLUSTER__filemap_fdatawait_range(struct address_space *mapping,
 				     loff_t start_byte, loff_t end_byte)
 {
-	pgoff_t index = start_byte >> PAGE_SHIFT;
-	pgoff_t end = end_byte >> PAGE_SHIFT;
+	pgoff_t index = start_byte >> PAGE_CACHE_SHIFT;
+	pgoff_t end = end_byte >> PAGE_CACHE_SHIFT;
 	struct pagevec pvec;
 	int nr_pages;
 	int ret = 0;
@@ -3162,7 +3174,7 @@ static int CLUSTER__filemap_fdatawait_range(struct address_space *mapping,
 			if (page->index > end)
 				continue;
 
-			//wait_on_page_writeback(page);
+			wait_on_page_writeback(page);
 			if (TestClearPageError(page))
 				ret = -EIO;
 		}
@@ -3192,11 +3204,10 @@ int CLUSTER_filemap_write_and_wait_range(struct address_space *mapping,
 {
 	int err = 0;
 
-/*
-	if ((!dax_mapping(mapping) && mapping->nrpages) ||
-	    (dax_mapping(mapping) && mapping->nrexceptional)) {
-		err = CLUSTER__filemap_fdatawrite_range(mapping, lstart, lend,
+	if (mapping->nrpages) {
+		err = CLUSTER_filemap_fdatawrite_range(mapping, lstart, lend,
 						 WB_SYNC_ALL);
+		/* See comment of filemap_write_and_wait() */
 		if (err != -EIO) {
 			int err2 = CLUSTER_filemap_fdatawait_range(mapping,
 						lstart, lend);
@@ -3206,7 +3217,6 @@ int CLUSTER_filemap_write_and_wait_range(struct address_space *mapping,
 	} else {
 		err = filemap_check_errors(mapping);
 	}
-*/
 	return err;
 }
 EXPORT_SYMBOL(CLUSTER_filemap_write_and_wait_range);

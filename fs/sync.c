@@ -192,7 +192,11 @@ int vfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync)
 		spin_unlock(&inode->i_lock);
 		mark_inode_dirty_sync(inode);
 	}
-	return file->f_op->fsync(file, start, end, datasync);
+
+	if (file->f_flags & O_CLUSTER)
+		return file->f_op->CLUSTER_fsync(file, start, end, datasync);
+	else
+		return file->f_op->fsync(file, start, end, datasync);
 }
 EXPORT_SYMBOL(vfs_fsync_range);
 
