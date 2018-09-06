@@ -1168,10 +1168,10 @@ restart_loop:
 static int CLUSTER_journal_submit_commit_record(journal_t *journal,
 					transaction_t *commit_transaction,
 					struct buffer_head **cbh,
-					__u32 crc32_sum, struct buffer_head *_bh)
+					__u32 crc32_sum, struct buffer_head *bh)
 {
 	struct commit_header *tmp;
-	struct buffer_head *bh;
+	//struct buffer_head *bh;
 	int ret;
 	struct timespec now = current_kernel_time();
 
@@ -1180,9 +1180,9 @@ static int CLUSTER_journal_submit_commit_record(journal_t *journal,
 	if (is_journal_aborted(journal))
 		return 0;
 
-	bh = jbd2_journal_get_descriptor_buffer(journal);
-	if (!bh)
-		return 1;
+	//bh = jbd2_journal_get_descriptor_buffer(journal);
+	//if (!bh)
+	//	return 1;
 
 	tmp = (struct commit_header *)bh->b_data;
 	tmp->h_magic = cpu_to_be32(JBD2_MAGIC_NUMBER);
@@ -1406,7 +1406,7 @@ void CLUSTER_jbd2_journal_commit_transaction(journal_t *journal)
 	if (err)
 		jbd2_journal_abort(journal, err);
 
-	blk_start_plug(&plug);
+	//blk_start_plug(&plug);
 	jbd2_journal_write_revoke_records(journal, commit_transaction,
 					  &log_bufs, WRITE_SYNC);
 
@@ -1469,13 +1469,13 @@ void CLUSTER_jbd2_journal_commit_transaction(journal_t *journal)
 
 			jbd_debug(4, "JBD2: get descriptor\n");
 
-			//descriptor = journal->pre_descriptor_block;
+			descriptor = journal->pre_descriptor_block;
 
-			descriptor = jbd2_journal_get_descriptor_buffer(journal);
-			if (!descriptor) {
-				jbd2_journal_abort(journal, -EIO);
-				continue;
-			}
+			//descriptor = jbd2_journal_get_descriptor_buffer(journal);
+			//if (!descriptor) {
+			//	jbd2_journal_abort(journal, -EIO);
+			//	continue;
+			//}
 
 			jbd_debug(4, "JBD2: got buffer %llu (%p)\n",
 				(unsigned long long)descriptor->b_blocknr,
@@ -1501,7 +1501,7 @@ void CLUSTER_jbd2_journal_commit_transaction(journal_t *journal)
 
 		/* Where is the buffer to be written? */
 
-		err = jbd2_journal_next_log_block(journal, &blocknr);
+		//err = jbd2_journal_next_log_block(journal, &blocknr);
 		/* If the block mapping failed, just abandon the buffer
 		   and repeat this loop: we'll fall into the
 		   refile-on-abort condition above. */
@@ -1528,14 +1528,14 @@ void CLUSTER_jbd2_journal_commit_transaction(journal_t *journal)
 		 */
 		set_bit(BH_JWrite, &jh2bh(jh)->b_state);
 		JBUFFER_TRACE(jh, "ph3: write metadata");
-		flags = jbd2_journal_write_metadata_buffer(commit_transaction,
-						jh, &wbuf[bufs], blocknr);
+		//flags = jbd2_journal_write_metadata_buffer(commit_transaction,
+		//				jh, &wbuf[bufs], blocknr);
 
-		//metadata = journal->pre_metadata_block;
-		//flags = CLUSTER_jbd2_journal_write_metadata_buffer(commit_transaction,
-		//											jh, &wbuf[bufs], metadata);
-		//journal->pre_metadata_block = metadata->b_this_page;
-		//metadata->b_this_page = NULL;
+		metadata = journal->pre_metadata_block;
+		flags = CLUSTER_jbd2_journal_write_metadata_buffer(commit_transaction,
+													jh, &wbuf[bufs], metadata);
+		journal->pre_metadata_block = metadata->b_this_page;
+		metadata->b_this_page = NULL;
 
 		if (flags < 0) {
 			jbd2_journal_abort(journal, flags);
@@ -1599,9 +1599,8 @@ start_journal_io:
 				clear_buffer_dirty(bh);
 				set_buffer_uptodate(bh);
 				bh->b_end_io = journal_end_buffer_io_sync;
-				submit_bh(WRITE_SYNC, bh);
+				//submit_bh(WRITE_SYNC, bh);
 
-/*
 				bio = CLUSTER_make_bh_to_bio(WRITE_SYNC, bh);
 				bio->bi_next = NULL;
 				if (!first_bio)
@@ -1610,7 +1609,6 @@ start_journal_io:
 					last_bio->bi_next = bio;
 					last_bio = bio;	
 				}
-*/
 
 			}
 			cond_resched();
@@ -1675,11 +1673,11 @@ start_journal_io:
 			__jbd2_journal_abort_hard(journal);
 	}
 
-	blk_finish_plug(&plug);
+	//blk_finish_plug(&plug);
 
-	//overlap_data = &current->overlap_data;
-	//overlap_data->journal = journal;
-	//CLUSTER_submit_bio(WRITE_SYNC, first_bio);
+	overlap_data = &current->overlap_data;
+	overlap_data->journal = journal;
+	CLUSTER_submit_bio(WRITE_SYNC, first_bio);
 
 	/* Lo and behold: we have just managed to send a transaction to
            the log.  Before we can commit it, wait for the IO so far to
@@ -1764,7 +1762,7 @@ start_journal_io:
 	write_unlock(&journal->j_state_lock);
 
 	if (!jbd2_has_feature_async_commit(journal)) {
-		//overlap_data->journal = NULL;
+		overlap_data->journal = NULL;
 		err = CLUSTER_journal_submit_commit_record(journal, commit_transaction,
 						&cbh, crc32_sum, journal->pre_commit_block);
 

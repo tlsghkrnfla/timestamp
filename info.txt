@@ -1,5 +1,5 @@
 
-18.09.04
+18.09.06
 
-CLUSTER 4.4.7 read_optimized kernel
+CLUSTER 4.4.7 read_optimized kernel (+ maybe write_optimized)
 

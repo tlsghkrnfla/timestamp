@@ -142,6 +142,8 @@ struct nvme_queue {
 	u8 cqe_seen;
 	struct async_cmd_info cmdinfo;
 
+	struct list_head iodlist;
+	struct CLUSTER_nvme_request request_tags[64];
 	struct CLUSTER_nvme_request *nvme_reqs;
 	struct CLUSTER_nvme_request **req_tags;
 };
@@ -1581,6 +1583,7 @@ static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 
 	if (qid > NUM_CORE) {
 		struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, qid - NUM_CORE - 1);
+		struct nvme_iod *iod;
 		int i;
 
 		table->nvmeq = (void *)nvmeq;
@@ -1592,8 +1595,12 @@ static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 		//														dev, 0, GFP_ATOMIC);
 		//}
 
-		nvmeq->req_tags = kmalloc(depth * sizeof(struct nvme_request *), GFP_KERNEL);
-
+		//nvmeq->req_tags = kmalloc(depth * sizeof(struct nvme_request *), GFP_KERNEL);
+		INIT_LIST_HEAD(&nvmeq->iodlist);
+		for (i = 0; i < 64; i++) {
+			iod = __nvme_alloc_iod(64, 64 * PAGE_SIZE, dev, 0, GFP_ATOMIC);
+			list_add(&iod->list, &nvmeq->iodlist);
+		}
 	}
 
 	return nvmeq;
@@ -3741,6 +3748,8 @@ static void CLUSTER_write_req_completion(struct nvme_queue *nvmeq,
 
 	//list_add(&req->iod->list, &table->iodlist);
 	dma_unmap_sg(nvmeq->q_dmadev, req->iod->sg, req->iod->nents, DMA_TO_DEVICE);
+	//list_add(&req->iod->list, &table->iodlist);
+	nvme_free_iod(nvmeq->dev, req->iod);
 
 	kfree(req);
 }
@@ -3749,7 +3758,8 @@ static inline struct CLUSTER_nvme_request *get_req_with_tag(struct nvme_queue *n
 														unsigned int tag)
 {
 	//return &nvmeq->nvme_reqs[tag % 64];
-	return nvmeq->req_tags[tag];
+	//return nvmeq->req_tags[tag % 64];
+	return &nvmeq->request_tags[tag % 64];
 }
 
 static void CLUSTER_nvme_process_cq(struct nvme_queue *nvmeq, unsigned int *tag)
@@ -3879,10 +3889,18 @@ int CLUSTER_overlap_dd(struct notifier_block *self, unsigned long val, void *dat
 {
 	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
 	struct task_overlap_data *overlap_data = (struct task_overlap_data *)data;
+	struct nvme_queue *nvmeq = (struct nvme_queue *)table->nvmeq;
+	struct nvme_iod *iod;
+	int i;
 
-	CLUSTER_pre_dma_mapping(((struct nvme_queue *)table->nvmeq)->dev,
+	for (i = 0; i < overlap_data->bio_count; i++) {
+		iod = __nvme_alloc_iod(64, 64 * PAGE_SIZE, nvmeq->dev, 0, GFP_ATOMIC);
+		list_add(&iod->list, &nvmeq->iodlist);
+	}
+
+	CLUSTER_pre_dma_mapping(nvmeq->dev,
 					&table->pagelist, &overlap_data->pagelist, overlap_data->page_count);
-	CLUSTER_post_dma_unmapping(((struct nvme_queue *)table->nvmeq)->dev, &table->iodlist);
+	CLUSTER_post_dma_unmapping(nvmeq->dev, &table->iodlist);
 
 	return 0;
 }
@@ -3932,18 +3950,18 @@ void CLUSTER_overlap_journaling(struct task_overlap_data *ovelap_data, journal_t
 		}
 		journal->pre_metadata_block = first_bh;
 
-		journal->pre_commit_block = CLUSTER_jbd2_journal_get_descriptor_buffer(journal);
+		//journal->pre_commit_block = CLUSTER_jbd2_journal_get_descriptor_buffer(journal);
 		//											(tx, JBD2_COMMIT_BLOCK);
 
 	} else {  // prepare journaling commit block
-		//journal->pre_commit_block = CLUSTER_jbd2_journal_get_descriptor_buffer(journal);
+		journal->pre_commit_block = CLUSTER_jbd2_journal_get_descriptor_buffer(journal);
 													//(journal, JBD2_COMMIT_BLOCK);
 	}
 }
 
 int nvme_write_polling(struct nvme_queue *nvmeq, int tag)
 {
-	struct task_overlap_data *overlap_data = &current->overlap_data;
+	//struct task_overlap_data *overlap_data = &current->overlap_data;
 /*
 	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, nvmeq->qid - NUM_CORE - 1);
 	struct list_head *pagelist = &table->write_pagelist;
@@ -3957,12 +3975,20 @@ int nvme_write_polling(struct nvme_queue *nvmeq, int tag)
 
 //printk("[CLUSTER] CLUSTER_write_polling before polling  total_pages %d\n", num);
 
-	//journal_t *journal = (journal_t *)overlap_data->journal;
-	//if (journal) {
-	//	CLUSTER_overlap_journaling(overlap_data, journal);
-	//}
+	struct task_overlap_data *overlap_data = &current->overlap_data;
+	struct nvme_iod *iod;
+	int i;
 
-	//usleep_range(8,8);
+
+	journal_t *journal = (journal_t *)overlap_data->journal;
+	if (journal) {
+		CLUSTER_overlap_journaling(overlap_data, journal);
+	}
+
+	for (i = 0; i < overlap_data->bio_count; i++) {
+		iod = __nvme_alloc_iod(64, 64 * PAGE_SIZE, nvmeq->dev, 0, GFP_ATOMIC);
+		list_add(&iod->list, &nvmeq->iodlist);
+	}
 
 	while (1) {
 		if ((le16_to_cpu(nvmeq->cqes[nvmeq->cq_head].status)& 1)
@@ -3995,11 +4021,17 @@ int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 	struct nvme_queue *nvmeq = (struct nvme_queue *)table->nvmeq;
 	struct CLUSTER_nvme_request *req = NULL;
 	struct scatterlist *sg = NULL;
+	struct nvme_iod *iod;
+	int request_count = 0;
 
 	while (1) {
 		//req = &nvmeq->nvme_reqs[nvmeq->sq_tail % 64];
-		req = (struct CLUSTER_nvme_request *)kmalloc(sizeof(struct CLUSTER_nvme_request), GFP_ATOMIC);
-		req->iod = __nvme_alloc_iod(bio->bi_vcnt, bio->bi_vcnt * PAGE_SIZE, nvmeq->dev, 0, GFP_ATOMIC);
+		//req = (struct CLUSTER_nvme_request *)kmalloc(sizeof(struct CLUSTER_nvme_request), GFP_ATOMIC);
+		//req->iod = __nvme_alloc_iod(bio->bi_vcnt, bio->bi_vcnt * PAGE_SIZE, nvmeq->dev, 0, GFP_ATOMIC);
+		req = &nvmeq->request_tags[nvmeq->sq_tail % 64];
+		iod = list_last_entry(&nvmeq->iodlist, struct nvme_iod, list);
+		list_del(&iod->list);
+		req->iod = iod;
 
 		sg_init_table(req->iod->sg, bio->bi_vcnt);
 		req->iod->nents = bio->bi_vcnt;
@@ -4011,7 +4043,7 @@ int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 		nvme_setup_prps(nvmeq->dev, req->iod, bio->bi_vcnt * PAGE_SIZE, GFP_ATOMIC);
 
 		overlap_data->tag = nvmeq->sq_tail;
-		nvmeq->req_tags[nvmeq->sq_tail] = req;
+		//nvmeq->req_tags[nvmeq->sq_tail] = req;
 
 		req->cmd.rw.opcode = nvme_cmd_read;
 		req->cmd.rw.command_id = nvmeq->sq_tail;
@@ -4023,11 +4055,15 @@ int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 		req->cmd.rw.control = 0;
 		__nvme_submit_cmd(nvmeq, &req->cmd);
 
+		request_count++;
+
 		if (!bio->bi_next)
 			break;
 		else
 			bio = bio->bi_next;
 	}
+
+	overlap_data->bio_count = request_count;
 
 	atomic_notifier_chain_register(current->dd_chain, &overlap_dd_chain);
 	atomic_notifier_chain_register(current->poll_chain, &nvme_poll_chain);
@@ -4041,12 +4077,18 @@ int nvme_direct_write(struct CLUSTER_table *table, struct bio *bio)
 	struct nvme_queue *nvmeq = (struct nvme_queue *)table->nvmeq;
 	struct CLUSTER_nvme_request *req = NULL;
 	struct scatterlist *sg = NULL;
+	struct nvme_iod *iod;
 	int tag = 0;
+	int request_count = 0;
 
 	while (1) {
 		//req = &nvmeq->nvme_reqs[nvmeq->sq_tail % 64];
-		req = (struct CLUSTER_nvme_request *)kmalloc(sizeof(struct CLUSTER_nvme_request), GFP_ATOMIC);
-		req->iod = __nvme_alloc_iod(bio->bi_vcnt, bio->bi_vcnt * PAGE_SIZE, nvmeq->dev, 0, GFP_ATOMIC);
+		//req = (struct CLUSTER_nvme_request *)kmalloc(sizeof(struct CLUSTER_nvme_request), GFP_ATOMIC);
+		//req->iod = __nvme_alloc_iod(bio->bi_vcnt, bio->bi_vcnt * PAGE_SIZE, nvmeq->dev, 0, GFP_ATOMIC);
+		req = &nvmeq->request_tags[nvmeq->sq_tail % 64];
+		iod = list_last_entry(&nvmeq->iodlist, struct nvme_iod, list);
+		list_del(&iod->list);
+		req->iod = iod;
 
 		sg_init_table(req->iod->sg, bio->bi_vcnt);
 		req->iod->nents = bio->bi_vcnt;
@@ -4064,25 +4106,29 @@ int nvme_direct_write(struct CLUSTER_table *table, struct bio *bio)
 
 		//overlap_data->tag = nvmeq->sq_tail;
 		tag = nvmeq->sq_tail;
-		nvmeq->req_tags[nvmeq->sq_tail] = req;
+		//nvmeq->req_tags[nvmeq->sq_tail] = req;
 
 		tag = nvmeq->sq_tail;
 		req->cmd.rw.opcode = nvme_cmd_write;
 		req->cmd.rw.command_id = nvmeq->sq_tail;
 		req->cmd.rw.nsid = cpu_to_le32(1);
-		req->cmd.rw.slba = cpu_to_le64((bio->bi_iter.bi_sector + 256) * 8);
-		//req->cmd.rw.slba = cpu_to_le64(bio->bi_iter.bi_sector + 256 * 8);
+		//req->cmd.rw.slba = cpu_to_le64((bio->bi_iter.bi_sector + 256) * 8);
+		req->cmd.rw.slba = cpu_to_le64(bio->bi_iter.bi_sector + 2048);
 		req->cmd.rw.prp1 = cpu_to_le64(sg_dma_address(req->iod->sg));
 		req->cmd.rw.prp2 = cpu_to_le64(req->iod->first_dma);
 		req->cmd.rw.length = cpu_to_le16((bio->bi_vcnt * 8) - 1);
 		req->cmd.rw.control = 0;
 		__nvme_submit_cmd(nvmeq, &req->cmd);
 
+		request_count++;
+
 		if (!bio->bi_next)
 			break;
 		else
 			bio = bio->bi_next;
 	}
+
+	overlap_data->bio_count = request_count;
 
 	//atomic_notifier_chain_register(current->dd_chain, &lazy_dd_chain);
 	//atomic_notifier_chain_register(current->poll_chain, &nvme_polling_chain);

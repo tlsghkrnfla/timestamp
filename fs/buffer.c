@@ -3478,11 +3478,10 @@ int CLUSTER_submit_bh(int rw, struct buffer_head *bh)
 	BUG_ON(buffer_delay(bh));
 	BUG_ON(buffer_unwritten(bh));
 
-	if (test_set_buffer_req(bh) && (rw == WRITE))
+	if (test_set_buffer_req(bh) && (rw & WRITE))
 		clear_buffer_write_io_error(bh);
 
 	bio = bio_alloc(GFP_NOIO, 1);
-	bio->bi_next = NULL;
 	bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
 	bio->bi_bdev = bh->b_bdev;
 
@@ -3491,6 +3490,7 @@ int CLUSTER_submit_bh(int rw, struct buffer_head *bh)
 
 	bio->bi_end_io = end_bio_bh_io_sync;
 	bio->bi_private = bh;
+	bio->bi_flags |= 0;
 
 	/* Take care of bh's that straddle the end of the device */
 	guard_bio_eod(rw, bio);
