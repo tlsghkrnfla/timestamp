@@ -1422,9 +1422,9 @@ static void nvme_free_queue(struct nvme_queue *nvmeq)
 		dma_free_coherent(nvmeq->q_dmadev, SQ_SIZE(nvmeq->q_depth),
 					nvmeq->sq_cmds, nvmeq->sq_dma_addr);
 
-	if (nvmeq->qid > NUM_CORE) {
-		kfree(nvmeq->req_tags);
-	}
+	//if (nvmeq->qid > NUM_CORE) {
+	//	kfree(nvmeq->req_tags);
+	//}
 
 	kfree(nvmeq);
 }
@@ -1446,7 +1446,8 @@ static void nvme_free_queues(struct nvme_dev *dev, int lowest)
 			//kfree(dev->queues[i]->nvme_reqs);
 			nvme_free_queue(dev->queues[i]);
 			dev->queues[i] = NULL;
-		}
+		} else
+			break;
 	}
 }
 
@@ -2510,6 +2511,8 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	if (result < nr_io_queues)
 		nr_io_queues = result;
 
+	nr_io_queues = NUM_CORE;
+
 	if (dev->cmb && NVME_CMB_SQS(dev->cmbsz)) {
 		result = nvme_cmb_qdepth(dev, nr_io_queues,
 				sizeof(struct nvme_command));
@@ -3263,7 +3266,7 @@ static void nvme_probe_work(struct work_struct *work)
 		nvme_dev_add(dev);
 	}
 
-	CLUSTER_pagelist_alloc(dev);
+	//CLUSTER_pagelist_alloc(dev);
 
 	return;
 
@@ -3461,7 +3464,7 @@ static void nvme_remove(struct pci_dev *pdev)
 {
 	struct nvme_dev *dev = pci_get_drvdata(pdev);
 
-	CLUSTER_pagelist_dealloc(dev);
+	//CLUSTER_pagelist_dealloc(dev);
 
 	spin_lock(&dev_list_lock);
 	list_del_init(&dev->node);

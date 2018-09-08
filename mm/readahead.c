@@ -596,6 +596,7 @@ int CLUSTER_mpage_end_io(struct bio *bio, int error)
 		}
 		if (!count) {
 			unlock_page(page);
+			count++;
 			continue;
 		}
 		put_page(page);
@@ -699,6 +700,7 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 
 		__set_page_locked(page);
 		page->index = page_offset;
+		//printk("[CLUSTER] mm/readahead.c page->index %u\n", page->index);
 		if ((ex_lbn == -1) || (ex_lbn + 1 != lbn)) {
 			if (!first_bio) {
 				first_bio = bio_alloc(GFP_KERNEL,
