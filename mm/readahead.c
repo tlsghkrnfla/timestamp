@@ -597,10 +597,11 @@ int CLUSTER_mpage_end_io(struct bio *bio, int error)
 		if (!count) {
 			unlock_page(page);
 			count++;
-			continue;
+			//continue;
+		} else {
+			put_page(page);
+			unlock_page(page);
 		}
-		put_page(page);
-		unlock_page(page);	
 	}
 	bio_put(bio);
 
@@ -682,12 +683,8 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 		sector_t block_in_file, last_block;
 
 		// Page allocation
-			//spin_lock_irq(&table->table_lock);
 		page = list_last_entry(pagelist, struct page, lru);
 		list_del(&page->lru);
-			//spin_unlock_irq(&table->table_lock);
-		put_cpu_var(CLUSTER_tables);
-
 		list_add(&page->lru, &overlap_data->pagelist);
 
 		// Find LBA with page index
@@ -707,7 +704,6 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 
 		__set_page_locked(page);
 		page->index = page_offset;
-		//printk("[CLUSTER] mm/readahead.c page->index %u\n", page->index);
 		if ((ex_lbn == -1) || (ex_lbn + 1 != lbn)) {
 			if (!first_bio) {
 				first_bio = bio_alloc(GFP_KERNEL,
@@ -735,18 +731,15 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 		if (ret == 32)
 			ex_lbn = -1;
 	}
+	put_cpu_var(CLUSTER_tables);
 
 	if (ret) {
-		//overlap_data->async = 0;
 		overlap_data->page_count = ret;
 		overlap_data->bio_count = bio_count;
 		overlap_data->end_io = CLUSTER_mpage_end_io;
 		atomic_notifier_chain_register(current->pc_chain, &overlap_pc_chain);
 		table->CLUSTER_nvme_ops->CLUSTER_direct_read(table, first_bio);
 	}
-
-	//put_cpu_var(CLUSTER_tables);
-
 out:
 	return return_page;
 }

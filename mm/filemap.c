@@ -2790,6 +2790,25 @@ find_page:
 			unlock_page(page);
 		}
 page_ok:
+
+/*
+	if (poll_page(page)) {
+		if (current->vfs_chain->head) {
+				printk("[CLUSTER] qqqqqqqqqqqqqqqqq\n");
+			__clear_page_poll(page);
+			atomic_notifier_call_chain(current->vfs_chain, 0,
+										&current->overlap_data);
+			atomic_notifier_call_chain(current->pc_chain, 0,
+										&current->overlap_data);
+			atomic_notifier_call_chain(current->dd_chain, 0,
+										&current->overlap_data);
+			current->vfs_chain->head = NULL;
+			current->pc_chain->head = NULL;
+			current->dd_chain->head = NULL;
+		}
+	}
+*/
+
 		/*
 		 * i_size must be checked after we know the page is Uptodate.
 		 *

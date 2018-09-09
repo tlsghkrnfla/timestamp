@@ -53,6 +53,9 @@ struct task_overlap_data {
 	int page_count, bio_count;
 	CLUSTER_end_io_t *end_io;
 
+	// dd
+	void *nvmeq;
+
 	// polling
 	int tag;
 

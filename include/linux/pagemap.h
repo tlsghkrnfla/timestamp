@@ -508,15 +508,9 @@ static inline int lock_page_killable(struct page *page)
 				current->pc_chain->head = NULL;
 				current->dd_chain->head = NULL;
 			}
-			while (!trylock_page(page)) {
-				if (current->poll_chain->head) {
-					atomic_notifier_call_chain(current->poll_chain, 0,
-												&current->overlap_data);
-					current->poll_chain->head = NULL;
 
-					//put_cpu_var(CLUSTER_tables);
-				}
-			}
+			if (!trylock_page(page))
+				return __lock_page_killable(page);
 			return 0;
 		}
 		return __lock_page_killable(page);
