@@ -36,6 +36,7 @@ struct CLUSTER_table {
 	struct CLUSTER_nvme_operations *CLUSTER_nvme_ops;
 	struct list_head pagelist, write_pagelist;
 	struct list_head iodlist;
+	//spinlock_t table_lock;
 };
 
 typedef int (CLUSTER_end_io_t)(struct bio *, int);

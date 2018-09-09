@@ -514,7 +514,7 @@ static inline int lock_page_killable(struct page *page)
 												&current->overlap_data);
 					current->poll_chain->head = NULL;
 
-					put_cpu_var(CLUSTER_tables);
+					//put_cpu_var(CLUSTER_tables);
 				}
 			}
 			return 0;

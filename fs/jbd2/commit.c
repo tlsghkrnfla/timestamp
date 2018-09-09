@@ -1250,6 +1250,9 @@ void CLUSTER_jbd2_journal_commit_transaction(journal_t *journal)
 	LIST_HEAD(io_bufs);
 	LIST_HEAD(log_bufs);
 
+
+//printk("[CLUSTER] jbd2 thread dev instance %d journal %p\n", journal->dev_instance, journal);
+
 	if (jbd2_journal_has_csum_v2or3(journal))
 		csum_size = sizeof(struct jbd2_journal_block_tail);
 

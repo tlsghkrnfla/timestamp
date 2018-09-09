@@ -621,6 +621,7 @@ int CLUSTER_overlap_pc(struct notifier_block *self, unsigned long val, void *dat
 		error = add_to_page_cache_lru(page, mapping, page->index,
 					mapping_gfp_constraint(mapping, GFP_KERNEL));
 		if (error) {
+			page_cache_release(page);
 			if (error == -EEXIST) {
 				page->mapping = NULL;
 				printk("[CLUSTER] page cache EEXIST (duplicated I/O on same index)\n");
@@ -674,13 +675,19 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 	if (end_index == 0)
 		return NULL;
 
+//printk("[CLUSTER] CLUSTER_do_page_cache_readahead nr_to_read %d\n", nr_to_read);
+
 	for (page_idx = 0; page_idx < nr_to_read; page_idx++) {
 		pgoff_t page_offset = offset + page_idx;
 		sector_t block_in_file, last_block;
 
 		// Page allocation
+			//spin_lock_irq(&table->table_lock);
 		page = list_last_entry(pagelist, struct page, lru);
 		list_del(&page->lru);
+			//spin_unlock_irq(&table->table_lock);
+		put_cpu_var(CLUSTER_tables);
+
 		list_add(&page->lru, &overlap_data->pagelist);
 
 		// Find LBA with page index

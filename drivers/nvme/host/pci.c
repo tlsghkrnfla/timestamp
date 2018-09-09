@@ -144,8 +144,6 @@ struct nvme_queue {
 
 	struct list_head iodlist;
 	struct CLUSTER_nvme_request request_tags[64];
-	struct CLUSTER_nvme_request *nvme_reqs;
-	struct CLUSTER_nvme_request **req_tags;
 };
 
 /*
@@ -963,6 +961,17 @@ static int nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 	return BLK_MQ_RQ_QUEUE_BUSY;
 }
 
+static void CLUSTER_req_completion(struct nvme_queue *,
+			struct CLUSTER_nvme_request *, struct nvme_completion *);
+
+static inline struct CLUSTER_nvme_request *get_req_with_tag(struct nvme_queue *nvmeq,
+														unsigned int tag)
+{
+	//return &nvmeq->nvme_reqs[tag % 64];
+	//return nvmeq->req_tags[tag % 64];
+	return &nvmeq->request_tags[tag % 64];
+}
+
 static void __nvme_process_cq(struct nvme_queue *nvmeq, unsigned int *tag)
 {
 	u16 head, phase;
@@ -983,8 +992,14 @@ static void __nvme_process_cq(struct nvme_queue *nvmeq, unsigned int *tag)
 		}
 		if (tag && *tag == cqe.command_id)
 			*tag = -1;
-		ctx = nvme_finish_cmd(nvmeq, cqe.command_id, &fn);
-		fn(nvmeq, ctx, &cqe);
+
+		// CLUSTER
+		if (cqe.command_id & 0x8000) {
+			CLUSTER_req_completion(nvmeq, get_req_with_tag(nvmeq, (cqe.command_id & ~0x8000)), &cqe);
+		} else {
+			ctx = nvme_finish_cmd(nvmeq, cqe.command_id, &fn);
+			fn(nvmeq, ctx, &cqe);
+		}
 	}
 
 	/* If the controller ignores the cq head doorbell and continuously
@@ -1553,6 +1568,9 @@ static struct CLUSTER_nvme_operations CLUSTER_nvme_ops;
 static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 							int depth)
 {
+		int i;
+		struct nvme_iod *iod;
+
 	struct nvme_queue *nvmeq = kzalloc(sizeof(*nvmeq), GFP_KERNEL);
 	if (!nvmeq)
 		return NULL;
@@ -1582,26 +1600,27 @@ static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 	mb();
 	dev->queue_count++;
 
-	if (qid > NUM_CORE) {
-		struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, qid - NUM_CORE - 1);
-		struct nvme_iod *iod;
-		int i;
-
-		table->nvmeq = (void *)nvmeq;
-		table->CLUSTER_nvme_ops = &CLUSTER_nvme_ops;
-		//nvmeq->nvme_reqs = (struct CLUSTER_nvme_request *)kmalloc
-		//					(sizeof(struct CLUSTER_nvme_request) * 64, GFP_ATOMIC);
-		//for (i = 0; i < 64; i++) {
-		//	nvmeq->nvme_reqs[i].iod = __nvme_alloc_iod(64, 64 * PAGE_SIZE,
-		//														dev, 0, GFP_ATOMIC);
-		//}
-
-		//nvmeq->req_tags = kmalloc(depth * sizeof(struct nvme_request *), GFP_KERNEL);
+	if (qid > 0) {
 		INIT_LIST_HEAD(&nvmeq->iodlist);
 		for (i = 0; i < 64; i++) {
 			iod = __nvme_alloc_iod(64, 64 * PAGE_SIZE, dev, 0, GFP_ATOMIC);
 			list_add(&iod->list, &nvmeq->iodlist);
 		}
+	}
+
+	if (qid > NUM_CORE) {
+		struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, qid - NUM_CORE - 1);
+		//struct nvme_iod *iod;
+		//int i;
+
+		table->nvmeq = (void *)nvmeq;
+		table->CLUSTER_nvme_ops = &CLUSTER_nvme_ops;
+
+		//INIT_LIST_HEAD(&nvmeq->iodlist);
+		//for (i = 0; i < 64; i++) {
+		//	iod = __nvme_alloc_iod(64, 64 * PAGE_SIZE, dev, 0, GFP_ATOMIC);
+		//	list_add(&iod->list, &nvmeq->iodlist);
+		//}
 	}
 
 	return nvmeq;
@@ -3266,7 +3285,7 @@ static void nvme_probe_work(struct work_struct *work)
 		nvme_dev_add(dev);
 	}
 
-	//CLUSTER_pagelist_alloc(dev);
+	CLUSTER_pagelist_alloc(dev);
 
 	return;
 
@@ -3464,7 +3483,7 @@ static void nvme_remove(struct pci_dev *pdev)
 {
 	struct nvme_dev *dev = pci_get_drvdata(pdev);
 
-	//CLUSTER_pagelist_dealloc(dev);
+	CLUSTER_pagelist_dealloc(dev);
 
 	spin_lock(&dev_list_lock);
 	list_del_init(&dev->node);
@@ -3668,6 +3687,9 @@ static void CLUSTER_pagelist_alloc(struct nvme_dev *dev)
 		if (!cpumask_test_cpu(cpu_num, cpu_online_mask))
 			continue;
 		table = per_cpu_ptr(&CLUSTER_tables, cpu_num);
+
+			//spin_lock_init(&table->table_lock);
+
 		pagelist = &table->pagelist;
 		INIT_LIST_HEAD(pagelist);
 		for (i = 0; i < NUM_PAGE; i++) {
@@ -3719,10 +3741,11 @@ static void CLUSTER_pagelist_dealloc(struct nvme_dev *dev)
 	return;
 }
 
-static void CLUSTER_req_completion(struct nvme_queue *nvmeq,
+void CLUSTER_req_completion(struct nvme_queue *nvmeq,
 			struct CLUSTER_nvme_request *req, struct nvme_completion *cpe)
 {
-	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+	//struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+	struct CLUSTER_table *table = &get_cpu_var(CLUSTER_tables);
 	int error = 0;
 	u16 status;	
 
@@ -3732,6 +3755,9 @@ static void CLUSTER_req_completion(struct nvme_queue *nvmeq,
 
 	req->end_io(req->bio, error);
 	list_add(&req->iod->list, &table->iodlist);
+
+	put_cpu_var(CLUSTER_tables);
+
 	kfree(req);
 }
 
@@ -3757,6 +3783,7 @@ static void CLUSTER_write_req_completion(struct nvme_queue *nvmeq,
 	kfree(req);
 }
 
+/*
 static inline struct CLUSTER_nvme_request *get_req_with_tag(struct nvme_queue *nvmeq,
 														unsigned int tag)
 {
@@ -3764,6 +3791,7 @@ static inline struct CLUSTER_nvme_request *get_req_with_tag(struct nvme_queue *n
 	//return nvmeq->req_tags[tag % 64];
 	return &nvmeq->request_tags[tag % 64];
 }
+*/
 
 static void CLUSTER_nvme_process_cq(struct nvme_queue *nvmeq, unsigned int *tag)
 {
@@ -3888,9 +3916,32 @@ void CLUSTER_set_sg(struct scatterlist **sg, struct CLUSTER_nvme_request *req,
 	}
 }
 
+void CLUSTER_set_write_sg(struct scatterlist **sg, struct CLUSTER_nvme_request *req,
+				struct bio *bio)
+{
+	int count = 0;
+
+	while (1) {
+		struct page *page = bio->bi_io_vec[count].bv_page;
+
+		if (!(*sg))
+			*sg = req->iod->sg;
+		else {
+			sg_unmark_end(*sg);
+			*sg = sg_next(*sg);
+		}
+		sg_set_page(*sg, page, PAGE_SIZE, 0);
+
+		count++;
+		if (count == bio->bi_vcnt)
+			break;
+	}
+}
+
 int CLUSTER_overlap_dd(struct notifier_block *self, unsigned long val, void *data)
 {
-	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+	//struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+	struct CLUSTER_table *table = &get_cpu_var(CLUSTER_tables);
 	struct task_overlap_data *overlap_data = (struct task_overlap_data *)data;
 	struct nvme_queue *nvmeq = (struct nvme_queue *)table->nvmeq;
 	struct nvme_iod *iod;
@@ -3905,6 +3956,8 @@ int CLUSTER_overlap_dd(struct notifier_block *self, unsigned long val, void *dat
 					&table->pagelist, &overlap_data->pagelist, overlap_data->page_count);
 	CLUSTER_post_dma_unmapping(nvmeq->dev, &table->iodlist);
 
+	put_cpu_var(CLUSTER_tables);
+
 	return 0;
 }
 
@@ -3916,9 +3969,9 @@ int nvme_polling(struct notifier_block *self, unsigned long val, void *data)
 
 	while (1) {
 		if ((le16_to_cpu(nvmeq->cqes[nvmeq->cq_head].status) & 1) == nvmeq->cq_phase) {
-			//spin_lock_irq(&qpair->q_lock);
+			spin_lock_irq(&nvmeq->q_lock);
 			CLUSTER_nvme_process_cq(nvmeq, &overlap_data->tag);
-			//spin_unlock_irq(&qpair->q_lock);
+			spin_unlock_irq(&nvmeq->q_lock);
 
 			if (overlap_data->tag == -1)
 				return 0;
@@ -4021,21 +4074,22 @@ struct notifier_block nvme_poll_chain = {
 int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 {
 	struct task_overlap_data *overlap_data = &current->overlap_data;
-	struct nvme_queue *nvmeq = (struct nvme_queue *)table->nvmeq;
+	//struct nvme_queue *nvmeq = (struct nvme_queue *)table->nvmeq;
+	struct nvme_queue *nvmeq = ((struct nvme_queue *)table->nvmeq)->dev->queues[smp_processor_id() + 1];
 	struct CLUSTER_nvme_request *req = NULL;
 	struct scatterlist *sg = NULL;
 	struct nvme_iod *iod;
 	int request_count = 0;
 
 	while (1) {
-		//req = &nvmeq->nvme_reqs[nvmeq->sq_tail % 64];
-		//req = (struct CLUSTER_nvme_request *)kmalloc(sizeof(struct CLUSTER_nvme_request), GFP_ATOMIC);
-		//req->iod = __nvme_alloc_iod(bio->bi_vcnt, bio->bi_vcnt * PAGE_SIZE, nvmeq->dev, 0, GFP_ATOMIC);
 		req = &nvmeq->request_tags[nvmeq->sq_tail % 64];
+
+		get_cpu();
 		iod = list_last_entry(&nvmeq->iodlist, struct nvme_iod, list);
 		list_del(&iod->list);
-		req->iod = iod;
+		put_cpu();
 
+		req->iod = iod;
 		sg_init_table(req->iod->sg, bio->bi_vcnt);
 		req->iod->nents = bio->bi_vcnt;
 		req->end_io = overlap_data->end_io;
@@ -4046,10 +4100,8 @@ int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 		nvme_setup_prps(nvmeq->dev, req->iod, bio->bi_vcnt * PAGE_SIZE, GFP_ATOMIC);
 
 		overlap_data->tag = nvmeq->sq_tail;
-		//nvmeq->req_tags[nvmeq->sq_tail] = req;
-
 		req->cmd.rw.opcode = nvme_cmd_read;
-		req->cmd.rw.command_id = nvmeq->sq_tail;
+		req->cmd.rw.command_id = (nvmeq->sq_tail) | 0x8000;
 		req->cmd.rw.nsid = cpu_to_le32(1);
 		req->cmd.rw.slba = cpu_to_le64((bio->bi_iter.bi_sector + 256) * 8);
 		req->cmd.rw.prp1 = cpu_to_le64(sg_dma_address(req->iod->sg));
@@ -4098,7 +4150,7 @@ int nvme_direct_write(struct CLUSTER_table *table, struct bio *bio)
 		req->bio = bio;
 
 		sg = NULL;
-		CLUSTER_set_sg(&sg, req, bio);
+		CLUSTER_set_write_sg(&sg, req, bio);
 
 		//req->iod->nents = bios_map_sg(bio, req->iod->sg, &sg);
 		//if (sg)
