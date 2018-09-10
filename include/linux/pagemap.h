@@ -493,7 +493,7 @@ static inline int oncache_page(struct page *page)
 static inline int lock_page_killable(struct page *page)
 {
 	might_sleep();
-
+/*
 	if (!trylock_page(page)) {
 		if (poll_page(page)) {
 			if (current->vfs_chain->head) {
@@ -508,13 +508,13 @@ static inline int lock_page_killable(struct page *page)
 				current->pc_chain->head = NULL;
 				current->dd_chain->head = NULL;
 			}
-
-			if (!trylock_page(page))
-				return __lock_page_killable(page);
-			return 0;
 		}
 		return __lock_page_killable(page);
 	}
+*/
+
+	if (!trylock_page(page))
+		return __lock_page_killable(page);
 
 	return 0;
 }

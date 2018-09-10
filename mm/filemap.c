@@ -2775,6 +2775,22 @@ find_page:
 					ra, filp, page,
 					index, last_index - index);
 		}
+
+	if (poll_page(page)) {
+		if (current->vfs_chain->head) {
+			__clear_page_poll(page);
+			atomic_notifier_call_chain(current->vfs_chain, 0,
+										&current->overlap_data);
+			atomic_notifier_call_chain(current->pc_chain, 0,
+										&current->overlap_data);
+			atomic_notifier_call_chain(current->dd_chain, 0,
+										&current->overlap_data);
+			current->vfs_chain->head = NULL;
+			current->pc_chain->head = NULL;
+			current->dd_chain->head = NULL;
+		}
+	}
+
 		if (!PageUptodate(page)) {
 			if (inode->i_blkbits == PAGE_CACHE_SHIFT ||
 					!mapping->a_ops->is_partially_uptodate)
