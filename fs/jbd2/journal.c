@@ -2694,6 +2694,34 @@ static void __exit journal_exit(void)
 	jbd2_journal_destroy_caches();
 }
 
+// CLUSTER
+int CLUSTER_jbd2_wakeup_transaction(journal_t *journal, tid_t tid)
+{
+	int	need_to_wait = 1;
+
+	read_lock(&journal->j_state_lock);
+	if (journal->j_running_transaction &&
+	    journal->j_running_transaction->t_tid == tid) {
+		if (journal->j_commit_request != tid) {
+			/* transaction not yet started, so request it */
+			read_unlock(&journal->j_state_lock);
+			atomic_inc(&journal->waiters);
+			jbd2_log_start_commit(journal, tid);
+			return 1;
+		}
+	} else if (!(journal->j_committing_transaction &&
+		     journal->j_committing_transaction->t_tid == tid))
+		need_to_wait = 0;
+	read_unlock(&journal->j_state_lock);
+	if (!need_to_wait)
+		return 0;
+
+	atomic_inc(&journal->waiters);
+	return 1;
+	//return jbd2_log_wait_commit(journal, tid);
+}
+EXPORT_SYMBOL(CLUSTER_jbd2_wakeup_transaction);
+
 struct buffer_head *CLUSTER_jbd2_journal_get_descriptor_buffer(journal_t *journal)
 {
 	struct buffer_head *bh;

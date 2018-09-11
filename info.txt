@@ -1,6 +1,5 @@
 
-18.09.06
+18.09.10
 
-CLUSTER 4.4.7 read_optimized(interrupt mechanism) kernel
-			write_optimized
+CLUSTER 4.4.7 I/O optimization interrupt mechanism
 

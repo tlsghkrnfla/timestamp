@@ -155,7 +155,7 @@ int CLUSTER_ext4_sync_file(struct file *file, loff_t start, loff_t end, int data
 	struct inode *inode = file->f_mapping->host;
 	struct ext4_inode_info *ei = EXT4_I(inode);
 	journal_t *journal = EXT4_SB(inode->i_sb)->s_journal;
-	int ret = 0, err;
+	int ret = 0, err, wait = 0;
 	tid_t commit_tid;
 	bool needs_barrier = false;
 
@@ -181,9 +181,18 @@ int CLUSTER_ext4_sync_file(struct file *file, loff_t start, loff_t end, int data
 	journal->CLUSTER_journal = 1;
 	overlap_data->journal = journal;
 
-	ret = CLUSTER_filemap_write_and_wait_range(inode->i_mapping, start, end);
+	ret = CLUSTER_filemap_write_range(inode->i_mapping, start, end);
 	if (ret)
 		return ret;
+
+	commit_tid = datasync ? ei->i_datasync_tid : ei->i_sync_tid;
+	if (journal->j_flags & JBD2_BARRIER &&
+	    !jbd2_trans_will_send_data_barrier(journal, commit_tid))
+		needs_barrier = true;
+	wait = CLUSTER_jbd2_wakeup_transaction(journal, commit_tid);
+
+	CLUSTER_filemap_fdatawait_range(inode->i_mapping, start, end);
+
 	/*
 	 * data=writeback,ordered:
 	 *  The caller's filemap_fdatawrite()/wait will sync the data.
@@ -203,11 +212,10 @@ int CLUSTER_ext4_sync_file(struct file *file, loff_t start, loff_t end, int data
 		goto out;
 	}
 
-	commit_tid = datasync ? ei->i_datasync_tid : ei->i_sync_tid;
-	if (journal->j_flags & JBD2_BARRIER &&
-	    !jbd2_trans_will_send_data_barrier(journal, commit_tid))
-		needs_barrier = true;
-	ret = jbd2_complete_transaction(journal, commit_tid);
+	if (wait) {
+		atomic_dec(&journal->waiters);
+		ret = jbd2_log_wait_commit(journal, commit_tid);
+	}
 	if (needs_barrier) {
 		err = blkdev_issue_flush(inode->i_sb->s_bdev, GFP_KERNEL, NULL);
 		if (!ret)

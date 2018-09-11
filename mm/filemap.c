@@ -3234,7 +3234,7 @@ int CLUSTER_filemap_fdatawait_range(struct address_space *mapping, loff_t start_
 }
 EXPORT_SYMBOL(CLUSTER_filemap_fdatawait_range);
 
-int CLUSTER_filemap_write_and_wait_range(struct address_space *mapping,
+int CLUSTER_filemap_write_range(struct address_space *mapping,
 				 loff_t lstart, loff_t lend)
 {
 	int err = 0;
@@ -3242,17 +3242,10 @@ int CLUSTER_filemap_write_and_wait_range(struct address_space *mapping,
 	if (mapping->nrpages) {
 		err = CLUSTER_filemap_fdatawrite_range(mapping, lstart, lend,
 						 WB_SYNC_ALL);
-		/* See comment of filemap_write_and_wait() */
-		if (err != -EIO) {
-			int err2 = CLUSTER_filemap_fdatawait_range(mapping,
-						lstart, lend);
-			if (!err)
-				err = err2;
-		}
 	} else {
 		err = filemap_check_errors(mapping);
 	}
 	return err;
 }
-EXPORT_SYMBOL(CLUSTER_filemap_write_and_wait_range);
+EXPORT_SYMBOL(CLUSTER_filemap_write_range);
 
