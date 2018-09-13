@@ -205,10 +205,10 @@ int CLUSTER_ext4_sync_file(struct file *file, loff_t start, loff_t end, int data
 	 *  (they were dirtied by commit).  But that's OK - the blocks are
 	 *  safe in-journal, which is all fsync() needs to ensure.
 	 */
-	//if (ext4_should_journal_data(inode)) {
-	//	ret = ext4_force_commit(inode->i_sb);
-	//	goto out;
-	//}
+	if (ext4_should_journal_data(inode)) {
+		ret = ext4_force_commit(inode->i_sb);
+		goto out;
+	}
 
 	if (wait) {
 //printk("[CLUSTER] journal before dec %d\n", atomic_read(&journal->waiters));

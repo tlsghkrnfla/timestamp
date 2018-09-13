@@ -1182,13 +1182,7 @@ static int adapter_alloc_cq(struct nvme_dev *dev, u16 qid,
 						struct nvme_queue *nvmeq)
 {
 	struct nvme_command c;
-	int flags;
-
-	if (qid > NUM_CORE) {
-		flags = NVME_QUEUE_PHYS_CONTIG;
-	} else {
-		flags = NVME_QUEUE_PHYS_CONTIG | NVME_CQ_IRQ_ENABLED;
-	}
+	int flags = NVME_QUEUE_PHYS_CONTIG | NVME_CQ_IRQ_ENABLED;
 
 	/*
 	 * Note: we (ab)use the fact the the prp fields survive if no data
@@ -1460,6 +1454,7 @@ static void nvme_free_queues(struct nvme_dev *dev, int lowest)
 		nvme_free_queue(nvmeq);
 	}
 
+/*
 	for (i = NUM_CORE + 1; ; i++) {
 		if (dev->queues[i]) {
 			iodlist = &dev->queues[i]->iodlist;
@@ -1473,6 +1468,7 @@ static void nvme_free_queues(struct nvme_dev *dev, int lowest)
 		} else
 			break;
 	}
+*/
 }
 
 /**
@@ -1617,8 +1613,8 @@ static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 		}
 	}
 
-	if (qid > NUM_CORE) {
-		struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, qid - NUM_CORE - 1);
+	if (qid > 0) {
+		struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, qid - 1);
 
 		table->nvmeq = (void *)nvmeq;
 		table->CLUSTER_nvme_ops = &CLUSTER_nvme_ops;
@@ -1673,11 +1669,11 @@ static int nvme_create_queue(struct nvme_queue *nvmeq, int qid)
 	if (result < 0)
 		goto release_cq;
 
-	if (qid <= NUM_CORE) {
+	//if (qid <= NUM_CORE) {
 		result = queue_request_irq(dev, nvmeq, nvmeq->irqname);
 		if (result < 0)
 			goto release_sq;
-	}
+	//}
 
 	nvme_init_queue(nvmeq, qid);
 	return result;
@@ -2424,7 +2420,8 @@ static void nvme_create_io_queues(struct nvme_dev *dev)
 {
 	unsigned i;
 
-	for (i = dev->queue_count; i <= dev->max_qid + NUM_CORE; i++)
+	//for (i = dev->queue_count; i <= dev->max_qid + NUM_CORE; i++)
+	for (i = dev->queue_count; i <= dev->max_qid; i++)
 		if (!nvme_alloc_queue(dev, i, dev->q_depth))
 			break;
 
@@ -2434,10 +2431,9 @@ static void nvme_create_io_queues(struct nvme_dev *dev)
 			break;
 		}
 
-	dev->queue_count -= NUM_CORE;
-	dev->online_queues -= NUM_CORE;
-	printk("[CLUSTER] NVMe queue: %d + polling NVMe queue: %d\n",
-										dev->queue_count, NUM_CORE);
+	//dev->queue_count -= NUM_CORE;
+	//dev->online_queues -= NUM_CORE;
+	printk("[CLUSTER] NVMe queue: %d\n", dev->queue_count);
 }
 
 static int set_queue_count(struct nvme_dev *dev, int count)
@@ -3410,7 +3406,7 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 							GFP_KERNEL, node);
 	if (!dev->entry)
 		goto free;
-	dev->queues = kzalloc_node((num_possible_cpus() + 1 + NUM_CORE) * sizeof(void *),
+	dev->queues = kzalloc_node((num_possible_cpus() + 1) * sizeof(void *),
 							GFP_KERNEL, node);
 	if (!dev->queues)
 		goto free;
@@ -4068,7 +4064,7 @@ struct notifier_block nvme_poll_chain = {
 int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 {
 	struct task_overlap_data *overlap_data = &current->overlap_data;
-	struct nvme_queue *nvmeq = ((struct nvme_queue *)table->nvmeq)->dev->queues[smp_processor_id() + 1];
+	struct nvme_queue *nvmeq = (struct nvme_queue *)(table->nvmeq);
 	struct CLUSTER_nvme_request *req = NULL;
 	struct scatterlist *sg = NULL;
 	struct nvme_iod *iod;
@@ -4092,6 +4088,7 @@ int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 		CLUSTER_set_sg(&sg, req, bio);
 		nvme_setup_prps(nvmeq->dev, req->iod, bio->bi_vcnt * PAGE_SIZE, GFP_ATOMIC);
 
+	spin_lock_irq(&nvmeq->q_lock);
 		overlap_data->tag = nvmeq->sq_tail;
 		req->cmd.rw.opcode = nvme_cmd_read;
 		req->cmd.rw.command_id = (nvmeq->sq_tail) | 0x8000;
@@ -4102,6 +4099,7 @@ int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 		req->cmd.rw.length = cpu_to_le16((bio->bi_vcnt * 8) - 1);
 		req->cmd.rw.control = 0;
 		__nvme_submit_cmd(nvmeq, &req->cmd);
+	spin_unlock_irq(&nvmeq->q_lock);
 
 		request_count++;
 
@@ -4123,7 +4121,7 @@ int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 int nvme_direct_write(struct CLUSTER_table *table, struct bio *bio)
 {
 	struct task_overlap_data *overlap_data = &current->overlap_data;
-	struct nvme_queue *nvmeq = ((struct nvme_queue *)table->nvmeq)->dev->queues[smp_processor_id() + 1];
+	struct nvme_queue *nvmeq = (struct nvme_queue *)(table->nvmeq);
 	struct CLUSTER_nvme_request *req = NULL;
 	struct scatterlist *sg = NULL;
 	struct nvme_iod *iod;
