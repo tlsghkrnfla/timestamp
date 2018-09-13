@@ -1,5 +1,9 @@
 
-18.09.10
+18.09.13
 
-CLUSTER 4.4.7 I/O optimization interrupt mechanism
+4.4.7 CLUSTER irq
+
+needs)
+	write optimization
+	multithread pinning on one core
 

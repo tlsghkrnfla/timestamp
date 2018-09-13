@@ -2705,9 +2705,9 @@ int CLUSTER_jbd2_wakeup_transaction(journal_t *journal, tid_t tid)
 		if (journal->j_commit_request != tid) {
 			/* transaction not yet started, so request it */
 			read_unlock(&journal->j_state_lock);
-			atomic_inc(&journal->waiters);
+			journal->CLUSTER_journal = 1;
 			jbd2_log_start_commit(journal, tid);
-			return 1;
+			goto need_wait_commit;
 		}
 	} else if (!(journal->j_committing_transaction &&
 		     journal->j_committing_transaction->t_tid == tid))
@@ -2715,7 +2715,7 @@ int CLUSTER_jbd2_wakeup_transaction(journal_t *journal, tid_t tid)
 	read_unlock(&journal->j_state_lock);
 	if (!need_to_wait)
 		return 0;
-
+need_wait_commit:
 	atomic_inc(&journal->waiters);
 	return 1;
 	//return jbd2_log_wait_commit(journal, tid);

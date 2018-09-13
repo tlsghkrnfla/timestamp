@@ -1221,7 +1221,6 @@ static int CLUSTER_journal_submit_commit_record(journal_t *journal,
 
 void CLUSTER_jbd2_journal_commit_transaction(journal_t *journal)
 {
-	struct task_overlap_data *overlap_data;
 	struct transaction_stats_s stats;
 	transaction_t *commit_transaction;
 	struct journal_head *jh;
@@ -1256,7 +1255,6 @@ void CLUSTER_jbd2_journal_commit_transaction(journal_t *journal)
 // 1) descriptor_block
 //journal->pre_descriptor_block = jbd2_journal_get_descriptor_buffer(journal);
 // metadata block prepare
-
 
 	if (jbd2_journal_has_csum_v2or3(journal))
 		csum_size = sizeof(struct jbd2_journal_block_tail);
@@ -1681,8 +1679,6 @@ start_journal_io:
 	}
 
 	//blk_finish_plug(&plug);
-	overlap_data = &current->overlap_data;
-	overlap_data->journal = journal;
 	CLUSTER_submit_bio(WRITE_SYNC, first_bio);
 
 	/* Lo and behold: we have just managed to send a transaction to
@@ -1771,13 +1767,18 @@ start_journal_io:
 	//write_unlock(&journal->j_state_lock);
 
 	if (!jbd2_has_feature_async_commit(journal)) {
-		overlap_data->journal = NULL;
 		err = CLUSTER_journal_submit_commit_record(journal, commit_transaction,
 						&cbh, crc32_sum);
 		//err = journal_submit_commit_record(journal, commit_transaction,
 		//				&cbh, crc32_sum);
 
-		while (atomic_read(&journal->waiters));
+		//while (atomic_read(&journal->waiters)) {
+		while (!need_resched()) {
+			if (!atomic_read(&journal->waiters))
+				break;
+
+			cpu_relax();
+		}
 
 		while (!list_empty(&io_bufs)) {
 			struct buffer_head *bh = list_entry(io_bufs.prev,
@@ -2114,4 +2115,6 @@ restart_loop:
 	journal->j_stats.run.rs_blocks += stats.run.rs_blocks;
 	journal->j_stats.run.rs_blocks_logged += stats.run.rs_blocks_logged;
 	spin_unlock(&journal->j_history_lock);
+
+	journal->CLUSTER_journal = 0;
 }
