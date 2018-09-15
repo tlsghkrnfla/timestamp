@@ -618,7 +618,7 @@ int CLUSTER_overlap_pc(struct notifier_block *self, unsigned long val, void *dat
 	while (!list_empty(&overlap_data->pagelist)) {
 		page = list_last_entry(&overlap_data->pagelist, struct page, lru);
 		list_del(&page->lru);
-		//kfree(page->mapping);
+		kfree(page->mapping);
 		error = add_to_page_cache_lru(page, mapping, page->index,
 					mapping_gfp_constraint(mapping, GFP_KERNEL));
 		if (error) {
@@ -632,13 +632,11 @@ int CLUSTER_overlap_pc(struct notifier_block *self, unsigned long val, void *dat
 		}
 	}
 
-/*
 	for (error = 0; error < overlap_data->page_count; error++) {
 		page = page_cache_alloc_cold(mapping);
 		if (!page) printk("Page reallocation error!!\n");
 		list_add(&page->lru, &overlap_data->pagelist);
 	}
-*/
 
 	return 0;
 }
@@ -684,16 +682,9 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 		pgoff_t page_offset = offset + page_idx;
 		sector_t block_in_file, last_block;
 
-//if (nr_to_read != 1) {
-//	printk(KERN_ERR "mm/readahead why not 1? siubal %d\n", nr_to_read);
-//}
-
 		// Page allocation
-	//spin_lock_irq(&table->table_lock);
-		//page = list_last_entry(pagelist, struct page, lru);
-		//list_del(&page->lru);
-			page = page_cache_alloc_readahead(mapping);
-	//spin_unlock_irq(&table->table_lock);
+		page = list_last_entry(pagelist, struct page, lru);
+		list_del(&page->lru);
 		list_add(&page->lru, &overlap_data->pagelist);
 		__set_page_locked(page);
 
@@ -741,12 +732,8 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 		if (ret == 32)
 			ex_lbn = -1;
 	}
-	//put_cpu_var(CLUSTER_tables);
 
 	if (ret) {
-//if (ret != 1) {
-//	printk(KERN_ERR "mm/readahead why ret not 1? michin %d\n", ret);
-//}
 		overlap_data->page_count = ret;
 		overlap_data->bio_count = bio_count;
 		overlap_data->end_io = CLUSTER_mpage_end_io;
