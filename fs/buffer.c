@@ -3502,7 +3502,7 @@ int CLUSTER_submit_bh(int rw, struct buffer_head *bh)
 	bio->bi_rw |= rw;
 	//bio_set_op_attrs(bio, op, op_flags);
 
-	table->CLUSTER_nvme_ops->CLUSTER_direct_write(table, bio);
+	table->CLUSTER_nvme_ops->CLUSTER_direct_journal_write(table, bio);
 
 	//put_cpu_var(CLUSTER_tables);
 
@@ -3515,7 +3515,8 @@ int CLUSTER_submit_bio(int op, struct bio *bio)
 	//struct CLUSTER_table *table = &get_cpu_var(CLUSTER_tables);
 	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
 
-	table->CLUSTER_nvme_ops->CLUSTER_direct_write(table, bio);
+	//table->CLUSTER_nvme_ops->CLUSTER_direct_write(table, bio);
+	table->CLUSTER_nvme_ops->CLUSTER_direct_journal_write(table, bio);
 
 	//put_cpu_var(CLUSTER_tables);
 }

@@ -98,7 +98,7 @@ static inline bool ext4_bio_encrypted(struct bio *bio)
  * status of that page is hard.  See end_buffer_async_read() for the details.
  * There is no point in duplicating all that complexity.
  */
-static void mpage_end_io(struct bio *bio)
+void mpage_end_io(struct bio *bio)
 {
 	struct bio_vec *bv;
 	int i;

@@ -3227,6 +3227,8 @@ extern void ext4_resize_end(struct super_block *sb);
 #define EFSBADCRC	EBADMSG		/* Bad CRC detected */
 #define EFSCORRUPTED	EUCLEAN		/* Filesystem is corrupted */
 
+void mpage_end_io(struct bio *bio);
+
 int CLUSTER_extent_preload(struct address_space *mapping);
 
 #endif	/* _EXT4_H */

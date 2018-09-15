@@ -5639,7 +5639,8 @@ static int CLUSTER_ext4_da_write_begin(struct file *file, struct address_space *
 	 * the page (if needed) without using GFP_NOFS.
 	 */
 retry_grab:
-	page = CLUSTER_grab_cache_page_write_begin(mapping, index, flags);
+	//page = CLUSTER_grab_cache_page_write_begin(mapping, index, flags);
+	page = grab_cache_page_write_begin(mapping, index, flags);
 	if (!page)
 		return -ENOMEM;
 	unlock_page(page);
@@ -5659,8 +5660,6 @@ retry_journal:
 	}
 
 	lock_page(page);
-
-////////////////// why juseok??
 	if (page->mapping != mapping) {
 		/* The page got truncated from under us */
 		unlock_page(page);
