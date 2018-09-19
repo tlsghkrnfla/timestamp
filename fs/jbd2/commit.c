@@ -1254,7 +1254,7 @@ void CLUSTER_jbd2_journal_commit_transaction(journal_t *journal)
 	LIST_HEAD(log_bufs);
 
 
-		pre_descriptor = jbd2_journal_get_descriptor_buffer(journal);
+		//pre_descriptor = jbd2_journal_get_descriptor_buffer(journal);
 
 
 	if (jbd2_journal_has_csum_v2or3(journal))
@@ -1475,12 +1475,12 @@ void CLUSTER_jbd2_journal_commit_transaction(journal_t *journal)
 
 			jbd_debug(4, "JBD2: get descriptor\n");
 
-			descriptor = pre_descriptor;
-			//descriptor = jbd2_journal_get_descriptor_buffer(journal);
-			//if (!descriptor) {
-			//	jbd2_journal_abort(journal, -EIO);
-			//	continue;
-			//}
+			//descriptor = pre_descriptor;
+			descriptor = jbd2_journal_get_descriptor_buffer(journal);
+			if (!descriptor) {
+				jbd2_journal_abort(journal, -EIO);
+				continue;
+			}
 
 			jbd_debug(4, "JBD2: got buffer %llu (%p)\n",
 				(unsigned long long)descriptor->b_blocknr,

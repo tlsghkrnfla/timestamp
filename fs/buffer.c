@@ -3461,7 +3461,6 @@ struct bio *CLUSTER_make_bh_to_bio(int rw, struct buffer_head *bh)
 	if (buffer_prio(bh))
 		rw |= REQ_PRIO;
 	bio->bi_rw |= rw;
-	//bio_set_op_attrs(bio, op, op_flags);
 
 	return bio;
 }
@@ -3500,8 +3499,8 @@ int CLUSTER_submit_bh(int rw, struct buffer_head *bh)
 	if (buffer_prio(bh))
 		rw |= REQ_PRIO;
 	bio->bi_rw |= rw;
-	//bio_set_op_attrs(bio, op, op_flags);
 
+	//table->CLUSTER_nvme_ops->CLUSTER_direct_write(table, bio);
 	table->CLUSTER_nvme_ops->CLUSTER_direct_journal_write(table, bio);
 
 	//put_cpu_var(CLUSTER_tables);

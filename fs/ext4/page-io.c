@@ -532,7 +532,8 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
 
 void CLUSTER_ext4_io_submit(struct ext4_io_submit *io)
 {
-	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+	//struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
+	struct CLUSTER_table *table = &get_cpu_var(CLUSTER_tables);
 	struct bio *bio = io->io_bio;
 
 	if (bio) {
@@ -544,5 +545,7 @@ void CLUSTER_ext4_io_submit(struct ext4_io_submit *io)
 		bio_put(io->io_bio);
 	}
 	io->io_bio = NULL;
+
+	put_cpu_var(CLUSTER_tables);
 }
 

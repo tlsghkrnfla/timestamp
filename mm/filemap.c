@@ -2776,20 +2776,27 @@ find_page:
 					index, last_index - index);
 		}
 
+//printk("[CLUSTER] CLUSTER_file_read_iter page count before put page %d  index %d\n", page->_count, page->index);
+
 	if (poll_page(page)) {
 		if (current->vfs_chain->head) {
 			__clear_page_poll(page);
+//printk("[CLUSTER] 1  count page %d  index %d\n", page->_count, page->index);
 			atomic_notifier_call_chain(current->vfs_chain, 0,
 										&current->overlap_data);
+//printk("[CLUSTER] 2  count page %d  index %d\n", page->_count, page->index);
 			atomic_notifier_call_chain(current->pc_chain, 0,
 										&current->overlap_data);
+//printk("[CLUSTER] 3  count page %d  index %d\n", page->_count, page->index);
 			atomic_notifier_call_chain(current->dd_chain, 0,
 										&current->overlap_data);
+//printk("[CLUSTER] 4  count page %d  index %d\n", page->_count, page->index);
 			current->vfs_chain->head = NULL;
 			current->pc_chain->head = NULL;
 			current->dd_chain->head = NULL;
 		}
 	}
+//printk("[CLUSTER] after overlap CLUSTER_file_read_iter page count before put page %d  index %d\n", page->_count, page->index);
 
 		if (!PageUptodate(page)) {
 			if (inode->i_blkbits == PAGE_CACHE_SHIFT ||
@@ -2859,6 +2866,8 @@ page_ok:
 		offset &= ~PAGE_CACHE_MASK;
 		prev_offset = offset;
 
+//printk("[CLUSTER] CLUSTER_file_read_iter page count before put page %d  index %d\n", page->_count, page->index);
+
 		page_cache_release(page);
 		written += ret;
 		if (!iov_iter_count(iter))
@@ -2890,6 +2899,9 @@ page_not_up_to_date_locked:
 		}
 
 readpage:
+
+printk("[CLUSTER] generic...  readpage??? page count %d index %d\n", page->_count, page->index);
+
 		/*
 		 * A previous I/O error may have been due to temporary
 		 * failures, eg. multipath errors.
@@ -2937,6 +2949,8 @@ readpage_error:
 		goto out;
 
 no_cached_page:
+
+	printk("[CLUSTER] generic_file... no_cache_page\n");
 		/*
 		 * Ok, it wasn't cached, so we need to create a new
 		 * page..
