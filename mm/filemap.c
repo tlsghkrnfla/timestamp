@@ -2659,9 +2659,9 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			 */
 		}
 	} else {
-		if (file->f_flags & O_CLUSTER)
-			written = CLUSTER_generic_perform_write(file, from, iocb->ki_pos);
-		else
+		//if (file->f_flags & O_CLUSTER)
+		//	written = CLUSTER_generic_perform_write(file, from, iocb->ki_pos);
+		//else
 			written = generic_perform_write(file, from, iocb->ki_pos);
 		if (likely(written > 0))
 			iocb->ki_pos += written;
@@ -2758,7 +2758,7 @@ ssize_t CLUSTER_generic_file_read(struct file *filp, loff_t *ppos,
 		struct page *page;
 		pgoff_t end_index;
 		loff_t isize;
-		unsigned long nr, ret;
+		unsigned long nr, ret = 0;
 
 		cond_resched();
 find_page:
@@ -2776,27 +2776,24 @@ find_page:
 					index, last_index - index);
 		}
 
-//printk("[CLUSTER] CLUSTER_file_read_iter page count before put page %d  index %d\n", page->_count, page->index);
-
-	if (poll_page(page)) {
-		if (current->vfs_chain->head) {
-			__clear_page_poll(page);
-//printk("[CLUSTER] 1  count page %d  index %d\n", page->_count, page->index);
-			atomic_notifier_call_chain(current->vfs_chain, 0,
-										&current->overlap_data);
-//printk("[CLUSTER] 2  count page %d  index %d\n", page->_count, page->index);
-			atomic_notifier_call_chain(current->pc_chain, 0,
-										&current->overlap_data);
-//printk("[CLUSTER] 3  count page %d  index %d\n", page->_count, page->index);
-			atomic_notifier_call_chain(current->dd_chain, 0,
-										&current->overlap_data);
-//printk("[CLUSTER] 4  count page %d  index %d\n", page->_count, page->index);
-			current->vfs_chain->head = NULL;
-			current->pc_chain->head = NULL;
-			current->dd_chain->head = NULL;
+		if (poll_page(page)) {
+			if (current->vfs_chain->head) {
+				__clear_page_poll(page);
+				atomic_notifier_call_chain(current->vfs_chain, 0,
+											&current->overlap_data);
+				ret = atomic_notifier_call_chain(current->pc_chain, 0,
+											&current->overlap_data);
+				atomic_notifier_call_chain(current->dd_chain, 0,
+											&current->overlap_data);
+				current->vfs_chain->head = NULL;
+				current->pc_chain->head = NULL;
+				current->dd_chain->head = NULL;
+			}
 		}
-	}
-//printk("[CLUSTER] after overlap CLUSTER_file_read_iter page count before put page %d  index %d\n", page->_count, page->index);
+		if (ret) {
+			printk(KERN_ERR "[CLUSTER] CLUSTER_generic_file_read first page duplicated\n");
+			goto find_page;
+		}
 
 		if (!PageUptodate(page)) {
 			if (inode->i_blkbits == PAGE_CACHE_SHIFT ||
@@ -2900,7 +2897,7 @@ page_not_up_to_date_locked:
 
 readpage:
 
-printk("[CLUSTER] generic...  readpage??? page count %d index %d\n", page->_count, page->index);
+//printk("[CLUSTER] generic...  readpage??? page count %d index %d\n", page->_count, page->index);
 
 		/*
 		 * A previous I/O error may have been due to temporary

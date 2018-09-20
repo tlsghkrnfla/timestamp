@@ -610,8 +610,12 @@ SYSCALL_DEFINE4(pread64, unsigned int, fd, char __user *, buf,
 	f = fdget(fd);
 	if (f.file) {
 		ret = -ESPIPE;
-		if (f.file->f_mode & FMODE_PREAD)
-			ret = vfs_read(f.file, buf, count, &pos);
+		if (f.file->f_mode & FMODE_PREAD) {
+			if (f.file->f_flags & O_CLUSTER)
+				ret = CLUSTER_lw_read(f.file, buf, count, &pos);
+			else
+				ret = vfs_read(f.file, buf, count, &pos);
+		}
 		fdput(f);
 	}
 

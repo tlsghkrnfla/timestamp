@@ -582,9 +582,8 @@ int CLUSTER_mpage_end_io(struct bio *bio, int error)
 		struct page *page = bv->bv_page;
 
 		if (!page->mapping) {
-			//printk("duplicate I/O\n");
 			ClearPageUptodate(page);
-			unlock_page(page);
+			page_cache_release(page);
 			__free_pages(page, 0);
 			continue;
 		}
@@ -596,17 +595,6 @@ int CLUSTER_mpage_end_io(struct bio *bio, int error)
 			SetPageError(page);
 		}
 		unlock_page(page);
-
-		/*
-		if (!count) {
-			unlock_page(page);
-			count++;
-			//continue;
-		} else {
-			put_page(page);
-			unlock_page(page);
-		}
-		*/
 	}
 	bio_put(bio);
 
@@ -619,12 +607,13 @@ int CLUSTER_overlap_pc(struct notifier_block *self, unsigned long val, void *dat
 	struct address_space *mapping = overlap_data->file->f_mapping;
 	struct page *page;
 	int error;
-	int count = 0;
+	int count = 0, ret = 0;
 
 	while (!list_empty(&overlap_data->pagelist)) {
 		page = list_last_entry(&overlap_data->pagelist, struct page, lru);
 		list_del(&page->lru);
-		kfree(page->mapping);
+		if (page->mapping)
+			kfree(page->mapping);
 
 		error = add_to_page_cache_lru(page, mapping, page->index,
 					mapping_gfp_constraint(mapping, GFP_KERNEL));
@@ -634,22 +623,26 @@ int CLUSTER_overlap_pc(struct notifier_block *self, unsigned long val, void *dat
 				//printk("[CLUSTER] page cache EEXIST (duplicated I/O on same index)\n");
 			} else
 				printk(KERN_ERR "[CLUSTER] add_to_page_cache_lru error\n");
-			continue;
 		}
 
-		if (!count)
+		if (!count) {
 			count++;
-		else
-			page_cache_release(page);
+			ret = error;
+		} else {
+			if (!error)
+				page_cache_release(page);
+		}
 	}
 
 	for (error = 0; error < overlap_data->page_count; error++) {
 		page = page_cache_alloc_readahead(mapping);
-		if (!page) printk("Page reallocation error!!\n");
-		list_add(&page->lru, &overlap_data->pagelist);
+		if (!page)
+			printk("Page reallocation error!!\n");
+		else
+			list_add(&page->lru, &overlap_data->pagelist);
 	}
 
-	return 0;
+	return ret;
 }
 
 struct notifier_block overlap_pc_chain = {
@@ -686,8 +679,6 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 	if (end_index == 0)
 		return NULL;
 
-//printk("[CLUSTER] CLUSTER_do_page_cache_readahead nr_to_read %d\n", nr_to_read);
-
 	for (page_idx = 0; page_idx < nr_to_read; page_idx++) {
 		pgoff_t page_offset = offset + page_idx;
 		sector_t block_in_file, last_block;
@@ -696,6 +687,9 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 		if (list_empty(pagelist)) {
 			printk(KERN_ERR "[CLUSTER] CLUSTER_do_page_cache... pagelist is empty\n");
 			page = page_cache_alloc_readahead(mapping);
+			if (!page) {
+				printk(KERN_ERR "[CLUSTER ERROR] page alloc fail ENOMEM\n");
+			}
 			page->mapping = NULL;
 		} else {
 			page = list_last_entry(pagelist, struct page, lru);

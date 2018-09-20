@@ -7,5 +7,5 @@ make modules_install
 sleep 2
 make install
 sleep 2
-update-initramfs -u -k 4.4.7CLUSTERirq+
+#update-initramfs -u -k 4.4.7CLUSTERirq+
 
