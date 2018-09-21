@@ -3518,6 +3518,8 @@ int CLUSTER_submit_bio(int op, struct bio *bio)
 	table->CLUSTER_nvme_ops->CLUSTER_direct_journal_write(table, bio);
 
 	//put_cpu_var(CLUSTER_tables);
+
+	return 0;
 }
 EXPORT_SYMBOL(CLUSTER_submit_bio);
 

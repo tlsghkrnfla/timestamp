@@ -20,7 +20,6 @@
 
 #include "internal.h"
 
-#include <linux/cluster.h>
 #include "../fs/ext4/ext4.h"
 
 /*
@@ -573,10 +572,10 @@ SYSCALL_DEFINE3(readahead, int, fd, loff_t, offset, size_t, count)
 }
 
 // CLUSTER
-int CLUSTER_mpage_end_io(struct bio *bio, int error)
+int CLUSTER_mpage_end_io(struct bio *bio)
 {
 	struct bio_vec *bv;
-	int i, count = 0;
+	int i;
 
 	bio_for_each_segment_all(bv, bio, i) {
 		struct page *page = bv->bv_page;
@@ -587,13 +586,8 @@ int CLUSTER_mpage_end_io(struct bio *bio, int error)
 			__free_pages(page, 0);
 			continue;
 		}
-		if (!error) {
-			ClearPageError(page);
-			SetPageUptodate(page);
-		} else {
-			ClearPageUptodate(page);
-			SetPageError(page);
-		}
+		SetPageUptodate(page);
+		ClearPageError(page);
 		unlock_page(page);
 	}
 	bio_put(bio);
@@ -601,16 +595,16 @@ int CLUSTER_mpage_end_io(struct bio *bio, int error)
 	return 0;
 }
 
-int CLUSTER_overlap_pc(struct notifier_block *self, unsigned long val, void *data)
+int CLUSTER_overlap_pc(struct task_overlap_data *data)
 {
-	struct task_overlap_data *overlap_data = (struct task_overlap_data *)data;
-	struct address_space *mapping = overlap_data->file->f_mapping;
+	struct CLUSTER_table *table;
+	struct address_space *mapping = data->file->f_mapping;
 	struct page *page;
-	int error;
-	int count = 0, ret = 0;
+	struct bio *bio, *biolist;
+	int error, count = 0, ret = 0;
 
-	while (!list_empty(&overlap_data->pagelist)) {
-		page = list_last_entry(&overlap_data->pagelist, struct page, lru);
+	while (!list_empty(&data->pagelist)) {
+		page = list_last_entry(&data->pagelist, struct page, lru);
 		list_del(&page->lru);
 		if (page->mapping)
 			kfree(page->mapping);
@@ -619,8 +613,8 @@ int CLUSTER_overlap_pc(struct notifier_block *self, unsigned long val, void *dat
 					mapping_gfp_constraint(mapping, GFP_KERNEL));
 		if (error) {
 			if (error == -EEXIST) {
-				page->mapping = NULL;
 				//printk("[CLUSTER] page cache EEXIST (duplicated I/O on same index)\n");
+				page->mapping = NULL;
 			} else
 				printk(KERN_ERR "[CLUSTER] add_to_page_cache_lru error\n");
 		}
@@ -634,21 +628,30 @@ int CLUSTER_overlap_pc(struct notifier_block *self, unsigned long val, void *dat
 		}
 	}
 
-	for (error = 0; error < overlap_data->page_count; error++) {
+	for (count = 0; count < data->page_count; count++) {
 		page = page_cache_alloc_readahead(mapping);
 		if (!page)
-			printk("Page reallocation error!!\n");
+			printk(KERN_ERR "[CLUSTER ERROR] CLUSTER_ovelap_pc page allocation error!!\n");
 		else
-			list_add(&page->lru, &overlap_data->pagelist);
+			list_add(&page->lru, &data->pagelist);
 	}
+
+	table = &get_cpu_var(CLUSTER_tables);
+	biolist = &table->biolist;
+	for (count = 0; count < data->bio_count; count++) {
+		bio = bio_alloc(GFP_KERNEL, 32);
+		if (!bio) {
+			printk(KERN_ERR "[CLUSTER ERROR] CLUSTER_ovelap_pc bio refill error!!\n");
+		} else {
+			bio->bi_next = biolist->bi_next;
+			biolist->bi_next = bio;
+		}
+	}
+	put_cpu_var(CLUSTER_tables);
 
 	return ret;
 }
-
-struct notifier_block overlap_pc_chain = {
-	.notifier_call = CLUSTER_overlap_pc,
-	.priority = 0,
-};
+EXPORT_SYMBOL(CLUSTER_overlap_pc);
 
 struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 				struct file *filp, pgoff_t offset, unsigned long nr_to_read,
@@ -658,16 +661,19 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 	struct page *page, *return_page = NULL;
 	unsigned long end_index;	/* The last page we want to read */
 	int page_idx;
-	int ret = 0, page_count = 0;
+	int ret = 0, page_count = 0, bio_count = 0;
 	loff_t isize = i_size_read(inode);
 
-	struct bio *bio, *first_bio = NULL;
+	struct bio *bio, *new_bio, *first_bio = NULL;
 	const unsigned blkbits = inode->i_blkbits;
 	unsigned long lbn, ex_lbn = -1;
 	struct ext4_map_blocks map;
 
 	struct CLUSTER_table *table = &get_cpu_var(CLUSTER_tables);
 	struct list_head *pagelist = &table->pagelist;
+
+		struct bio *biolist = &table->biolist;
+
 	struct task_overlap_data *overlap_data = &current->overlap_data;
 	INIT_LIST_HEAD(&overlap_data->pagelist);
 
@@ -687,9 +693,8 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 		if (list_empty(pagelist)) {
 			printk(KERN_ERR "[CLUSTER] CLUSTER_do_page_cache... pagelist is empty\n");
 			page = page_cache_alloc_readahead(mapping);
-			if (!page) {
+			if (!page)
 				printk(KERN_ERR "[CLUSTER ERROR] page alloc fail ENOMEM\n");
-			}
 			page->mapping = NULL;
 		} else {
 			page = list_last_entry(pagelist, struct page, lru);
@@ -710,25 +715,32 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 			map.m_lblk = block_in_file;
 			map.m_len = last_block - block_in_file;
 			if (ext4_map_blocks(NULL, inode, &map, 0) < 0)
-				continue;
+				printk(KERN_ERR "[CLUSTER ERROR] CLUSTER_do_page_cache_readahead ext_map_blocks error map.m_lblk %d!!\n", map.m_lblk);
 			lbn = map.m_pblk;
 		}
 
 		page->index = page_offset;
 		if ((ex_lbn == -1) || (ex_lbn + 1 != lbn)) {
+			//new_bio = bio_alloc(GFP_KERNEL, min_t(int, nr_to_read, BIO_MAX_PAGES));
+			new_bio = biolist->bi_next;
+			if (!new_bio) {
+				printk(KERN_ERR "[CLUSTER ERROR] CLUSTER_do_page_cache_readahead bio allocation error!!\n");
+				new_bio = bio_alloc(GFP_KERNEL, min_t(int, nr_to_read, BIO_MAX_PAGES));
+			} else {
+				biolist->bi_next = new_bio->bi_next;
+				bio_count++;
+			}
+
 			if (!first_bio) {
-				first_bio = bio_alloc(GFP_KERNEL,
-							min_t(int, nr_to_read, BIO_MAX_PAGES));
-				first_bio->bi_next = NULL;
-				bio = first_bio;
 				__set_page_poll(page);
 				return_page = page;
+				first_bio = new_bio;
+				bio = new_bio;
 			} else {
-				bio->bi_next = bio_alloc(GFP_KERNEL,
-							min_t(int, nr_to_read, BIO_MAX_PAGES));
-				bio = bio->bi_next;
-				bio->bi_next = NULL;
+				bio->bi_next = new_bio;
+				bio = new_bio;
 			}
+			bio->bi_next = NULL;
 			bio->bi_iter.bi_sector = lbn;
 			bio->bi_end_io = mpage_end_io;
 		}
@@ -745,14 +757,13 @@ struct page *CLUSTER_do_page_cache_readahead(struct address_space *mapping,
 
 	if (ret) {
 		overlap_data->page_count = page_count;
+		overlap_data->bio_count = bio_count;
 		overlap_data->end_io = CLUSTER_mpage_end_io;
-		atomic_notifier_chain_register(current->pc_chain, &overlap_pc_chain);
 		table->CLUSTER_nvme_ops->CLUSTER_direct_read(table, first_bio);
 	}
 
 	put_cpu_var(CLUSTER_tables);
 
-out:
 	return return_page;
 }
 

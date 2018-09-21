@@ -568,16 +568,37 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 	struct fd f = fdget_pos(fd);
 	ssize_t ret = -EBADF;
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	unsigned long long value, value2;
+	unsigned long long breakdown[10] = {0};
+	value = rdtsc();
+#endif
+
 	if (f.file) {
 		loff_t pos = file_pos_read(f.file);
-		if (f.file->f_flags & O_CLUSTER)
-			ret = CLUSTER_lw_read(f.file, buf, count, &pos);
-		else
-			ret = vfs_read(f.file, buf, count, &pos);
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+		if (f.file->f_flags & 040000000) {
+			current->breakdown = breakdown;
+		} else
+			current->breakdown = NULL;
+#endif
+
+		ret = vfs_read(f.file, buf, count, &pos);
 		if (ret >= 0)
 			file_pos_write(f.file, pos);
 		fdput_pos(f);
 	}
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	value2 = rdtsc();
+
+	if (current->breakdown) {
+		trace_CLUSTER_read_breakdown(value2 - value, breakdown[0], breakdown[1], breakdown[2], breakdown[3],
+			breakdown[4], breakdown[5], breakdown[6], breakdown[7], breakdown[8]);
+	}
+#endif
+
 	return ret;
 }
 
@@ -1339,26 +1360,16 @@ COMPAT_SYSCALL_DEFINE4(sendfile64, int, out_fd, int, in_fd,
 }
 #endif
 
-int CLUSTER_overlap_vfs(struct notifier_block *self, unsigned long val, void *_data)
+ssize_t CLUSTER_overlap_vfs(struct task_overlap_data *data)
 {
-	struct task_overlap_data *overlap_data = (struct task_overlap_data *)_data;
-	struct file *file = overlap_data->file;
-	char __user *buf = overlap_data->buf;
-	size_t count = overlap_data->count;
-	loff_t *pos = overlap_data->pos;
-
-	if (unlikely(!access_ok(VERIFY_WRITE, buf, count))) {
-		printk("CLUSTER_async_vfs access ok error!!\n");
+	if (unlikely(!access_ok(VERIFY_WRITE, data->buf, data->count))) {
+		printk("[CLUSTER] CLUSTER_async_vfs access ok error!!\n");
 		return -EFAULT;
 	}
 
-	return (ssize_t)rw_verify_area(READ, file, pos, count);
+	return rw_verify_area(READ, data->file, data->pos, data->count);
 }
-
-struct notifier_block overlap_vfs_chain = {
-	.notifier_call = CLUSTER_overlap_vfs,
-	.priority = 0,
-};
+EXPORT_SYMBOL(CLUSTER_overlap_vfs);
 
 ssize_t CLUSTER_lw_read(struct file *file, char __user *buf,
 					size_t count, loff_t *pos)
@@ -1372,16 +1383,6 @@ ssize_t CLUSTER_lw_read(struct file *file, char __user *buf,
 	if (!(file->f_mode & FMODE_CAN_READ))
 		return -EINVAL;
 
-	ATOMIC_NOTIFIER_HEAD(vfs_chain);
-	ATOMIC_NOTIFIER_HEAD(pc_chain);
-	ATOMIC_NOTIFIER_HEAD(dd_chain);
-	ATOMIC_NOTIFIER_HEAD(poll_chain);
-	current->vfs_chain = &vfs_chain;	
-	current->pc_chain = &pc_chain;	
-	current->dd_chain = &dd_chain;	
-	current->poll_chain = &poll_chain;
-	
-	atomic_notifier_chain_register(current->vfs_chain, &overlap_vfs_chain);
 	current->overlap_data.file = file;
 	current->overlap_data.buf = buf;
 	current->overlap_data.count = count;

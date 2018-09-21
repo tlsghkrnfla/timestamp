@@ -22,6 +22,8 @@
 #include <linux/page_ext.h>
 #include <linux/err.h>
 
+#include <linux/cluster.h>
+
 struct mempolicy;
 struct anon_vma;
 struct anon_vma_chain;
@@ -2316,6 +2318,8 @@ void __init setup_nr_node_ids(void);
 #else
 static inline void setup_nr_node_ids(void) {}
 #endif
+
+int CLUSTER_overlap_pc(struct task_overlap_data *);
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_MM_H */

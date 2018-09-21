@@ -421,20 +421,6 @@ static void __nvme_submit_cmd(struct nvme_queue *nvmeq,
 	nvmeq->sq_tail = tail;
 }
 
-static void CLUSTER_nvme_submit_cmd(struct nvme_queue *nvmeq,
-						struct nvme_command *cmd, u16 my_tail, u16 next_tail)
-{
-	if (nvmeq->sq_cmds_io)
-		memcpy_toio(&nvmeq->sq_cmds_io[my_tail], cmd, sizeof(*cmd));
-	else
-		memcpy(&nvmeq->sq_cmds[my_tail], cmd, sizeof(*cmd));
-
-	//if (++tail == nvmeq->q_depth)
-	//	tail = 0;
-	writel(next_tail, nvmeq->q_db);
-	//nvmeq->sq_tail = tail;
-}
-
 static void nvme_submit_cmd(struct nvme_queue *nvmeq, struct nvme_command *cmd)
 {
 	unsigned long flags;
@@ -1447,8 +1433,6 @@ static void nvme_free_queue(struct nvme_queue *nvmeq)
 
 static void nvme_free_queues(struct nvme_dev *dev, int lowest)
 {
-	struct list_head *iodlist;
-	struct nvme_iod *iod;
 	int i;
 
 	for (i = dev->queue_count - 1; i >= lowest; i--) {
@@ -1561,9 +1545,6 @@ static struct CLUSTER_nvme_operations CLUSTER_nvme_ops;
 static struct nvme_queue *nvme_alloc_queue(struct nvme_dev *dev, int qid,
 							int depth)
 {
-		int i;
-		struct nvme_iod *iod;
-
 	struct nvme_queue *nvmeq = kzalloc(sizeof(*nvmeq), GFP_KERNEL);
 	if (!nvmeq)
 		return NULL;
@@ -3659,44 +3640,50 @@ int CLUSTER_sglist_dma_unmapping(struct nvme_dev *dev, struct CLUSTER_table *tab
 static void CLUSTER_pagelist_alloc(struct nvme_dev *dev)
 {
 	struct CLUSTER_table *table;
-	struct list_head *pagelist;
 	struct page *page;
 	struct nvme_iod *iod;
+	struct bio *bio = NULL, *new_bio, *biolist;
 	int i, cpu_num;
 
 	for_each_possible_cpu(cpu_num) {
 		if (!cpumask_test_cpu(cpu_num, cpu_online_mask))
 			continue;
 		table = per_cpu_ptr(&CLUSTER_tables, cpu_num);
-
-		pagelist = &table->pagelist;
-		INIT_LIST_HEAD(pagelist);
+		INIT_LIST_HEAD(&table->pagelist);
 		for (i = 0; i < NUM_PAGE; i++) {
 			page = alloc_pages(GFP_HIGHUSER_MOVABLE|__GFP_COLD|__GFP_NORETRY|
 															__GFP_NOWARN, 0);
-			list_add(&page->lru, pagelist);
+			list_add(&page->lru, &table->pagelist);
 		}
-		CLUSTER_pagelist_dma_mapping(dev, pagelist, 0);
+		CLUSTER_pagelist_dma_mapping(dev, &table->pagelist, 0);
 
-		pagelist = &table->iodlist;	
-		INIT_LIST_HEAD(pagelist);
+		biolist = &table->biolist;
+		bio = biolist;
+		for (i = 0; i < 32; i++) {
+			bio->bi_next = bio_alloc(GFP_KERNEL, 32);
+			bio = bio->bi_next;
+			bio->bi_next = NULL;
+
+			//if (!biolist->bi_next) {
+			//	biolist->bi_next = new_bio;
+			//	bio = new_bio;
+			//} else {
+			//	bio->bi_next = new_bio;
+			//	bio = bio->bi_next;
+			//}
+			//bio->bi_next = NULL;
+		}
+
+if (!biolist->bi_next)
+	printk(KERN_ERR "???????????????????????\n");
+
+		INIT_LIST_HEAD(&table->iodlist);
 		for (i = 0; i < 32; i++) {
 			iod = __nvme_alloc_iod(32, 32 * PAGE_SIZE, dev, 0, GFP_ATOMIC);
-			list_add(&iod->list, pagelist);
+			list_add(&iod->list, &table->iodlist);
 		}
 
-/*
-		pagelist = &table->write_pagelist;
-		INIT_LIST_HEAD(pagelist);
-		for (i = 0; i < NUM_PAGE; i++) {
-			page = alloc_pages(GFP_HIGHUSER_MOVABLE|__GFP_COLD|__GFP_NORETRY|__GFP_NOWARN|__GFP_WRITE, 0);
-			list_add(&page->lru, pagelist);
-		}
-		CLUSTER_pagelist_dma_mapping(dev, pagelist, 1);
-*/
-
-		pagelist = &table->free_iodlist;
-		INIT_LIST_HEAD(pagelist);
+		INIT_LIST_HEAD(&table->free_iodlist);
 	}
 
 	return;
@@ -3705,7 +3692,6 @@ static void CLUSTER_pagelist_alloc(struct nvme_dev *dev)
 static void CLUSTER_pagelist_dealloc(struct nvme_dev *dev)
 {
 	struct CLUSTER_table *table;
-	struct list_head *pagelist;
 	struct page *page;
 	int cpu_num;
 
@@ -3713,9 +3699,8 @@ static void CLUSTER_pagelist_dealloc(struct nvme_dev *dev)
 		if (!cpumask_test_cpu(cpu_num, cpu_online_mask))
 			continue;
 		table = per_cpu_ptr(&CLUSTER_tables, cpu_num);
-		pagelist = &table->pagelist;
-		while (!list_empty(pagelist)) {
-			page = list_last_entry(pagelist, struct page, lru);
+		while (!list_empty(&table->pagelist)) {
+			page = list_last_entry(&table->pagelist, struct page, lru);
 			dma_unmap_sg(dev->dev, (struct scatterlist *)page->mapping,
 													1, DMA_FROM_DEVICE);
 			kfree(page->mapping);
@@ -3738,7 +3723,7 @@ void CLUSTER_req_completion(struct nvme_queue *nvmeq,
 
 	if (req->end_io) {  // read
 		table = &get_cpu_var(CLUSTER_tables);
-		req->end_io(req->bio, error);
+		req->end_io(req->bio);
 		list_add(&req->iod->list, &table->free_iodlist);
 		put_cpu_var(CLUSTER_tables);
 	} else {  // write
@@ -3751,7 +3736,6 @@ void CLUSTER_req_completion(struct nvme_queue *nvmeq,
 int CLUSTER_pre_dma_mapping(struct nvme_dev *dev, struct list_head *pagelist,
 						struct list_head *head, int req_size)
 {
-	struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
 	while (!list_empty(head)) {
 		struct page *page = list_last_entry(head, struct page, lru);
 		struct scatterlist *sg = kmalloc(sizeof(struct scatterlist), GFP_ATOMIC);
@@ -3854,33 +3838,27 @@ int CLUSTER_set_write_sg(struct scatterlist *sglist, struct bio *bio)
 	return nsegs;
 }
 
-int CLUSTER_overlap_dd(struct notifier_block *self, unsigned long val, void *data)
+int CLUSTER_overlap_dd(struct task_overlap_data *data)
 {
-	//struct CLUSTER_table *table = per_cpu_ptr(&CLUSTER_tables, smp_processor_id());
 	struct CLUSTER_table *table = &get_cpu_var(CLUSTER_tables);
-	struct task_overlap_data *overlap_data = (struct task_overlap_data *)data;
-	struct nvme_queue *nvmeq = (struct nvme_queue *)overlap_data->nvmeq;
+	struct nvme_queue *nvmeq = (struct nvme_queue *)data->nvmeq;
 	struct nvme_iod *iod;
 	int i;
 
-	for (i = 0; i < overlap_data->bio_count; i++) {
+	for (i = 0; i < data->iod_count; i++) {
 		iod = __nvme_alloc_iod(32, 32 * PAGE_SIZE, nvmeq->dev, 0, GFP_ATOMIC);
 		list_add(&iod->list, &table->iodlist);
 	}
 
-	CLUSTER_pre_dma_mapping(nvmeq->dev,
-					&table->pagelist, &overlap_data->pagelist, overlap_data->page_count);
+	CLUSTER_pre_dma_mapping(nvmeq->dev, &table->pagelist,
+								&data->pagelist, data->page_count);
 	CLUSTER_post_dma_unmapping(nvmeq->dev, &table->free_iodlist);
 
 	put_cpu_var(CLUSTER_tables);
 
 	return 0;
 }
-
-struct notifier_block overlap_dd_chain = {
-	.notifier_call = CLUSTER_overlap_dd,
-	.priority = 0,
-};
+//EXPORT_SYMBOL(CLUSTER_overlap_dd);
 
 int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 {
@@ -3897,6 +3875,8 @@ int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 		if (list_empty(iodlist)) {
 			iod = __nvme_alloc_iod(bio->bi_vcnt, bio->bi_vcnt * PAGE_SIZE,
 												nvmeq->dev, 0, GFP_ATOMIC);
+			if (!iod)
+				printk(KERN_ERR "[CLUSTER ERROR] nvme_direct_read iod allocation error!! bio size %d\n", bio->bi_vcnt);
 		} else {
 			iod = list_last_entry(iodlist, struct nvme_iod, list);
 			list_del(&iod->list);
@@ -3912,7 +3892,6 @@ int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 		req->iod = iod;
 		req->bio = bio;
 		req->end_io = overlap_data->end_io;
-
 		req->cmd.rw.opcode = nvme_cmd_read;
 		req->cmd.rw.command_id = (nvmeq->sq_tail) | 0x8000;
 		req->cmd.rw.nsid = cpu_to_le32(1);
@@ -3931,8 +3910,7 @@ int nvme_direct_read(struct CLUSTER_table *table, struct bio *bio)
 	}
 
 	overlap_data->nvmeq = (void *)nvmeq;
-	overlap_data->bio_count = iod_count;
-	atomic_notifier_chain_register(current->dd_chain, &overlap_dd_chain);
+	overlap_data->iod_count = iod_count;
 
 	return 0;
 }

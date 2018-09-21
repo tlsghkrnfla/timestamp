@@ -1379,10 +1379,6 @@ struct tlbflush_unmap_batch {
 };
 
 struct task_struct {
-	struct atomic_notifier_head *vfs_chain;
-	struct atomic_notifier_head *pc_chain;
-	struct atomic_notifier_head *dd_chain;
-	struct atomic_notifier_head *poll_chain;
 	struct task_overlap_data overlap_data;
 
 	volatile long state;	/* -1 unrunnable, 0 runnable, >0 stopped */

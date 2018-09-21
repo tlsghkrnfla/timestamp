@@ -668,3 +668,12 @@ config ZONE_DEVICE
 
 config FRAME_VECTOR
 	bool
+
+
+config IOSTACK_TIMESTAMP
+	bool "timestampling in vanilla i/o stack"
+	default n
+
+	help
+	  Enable timestamping of vanilla i/o stack"
+	

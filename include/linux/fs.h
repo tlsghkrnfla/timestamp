@@ -35,6 +35,8 @@
 #include <asm/byteorder.h>
 #include <uapi/linux/fs.h>
 
+#include <linux/cluster.h>
+
 struct backing_dev_info;
 struct bdi_writeback;
 struct export_operations;
@@ -3041,5 +3043,7 @@ static inline bool dir_relax(struct inode *inode)
 }
 
 extern bool path_noexec(const struct path *path);
+
+ssize_t CLUSTER_overlap_vfs(struct task_overlap_data *);
 
 #endif /* _LINUX_FS_H */

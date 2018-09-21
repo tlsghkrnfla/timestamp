@@ -156,4 +156,6 @@ static inline int nvme_nvm_ns_supported(struct nvme_ns *ns, struct nvme_id_ns *i
 }
 #endif /* CONFIG_NVM */
 
+int CLUSTER_overlap_dd(struct task_overlap_data *);
+
 #endif /* _NVME_H */

@@ -1,20 +1,16 @@
 #ifndef _LINUX_CLUSTER_H
 #define _LINUX_CLUSTER_H
 
-#include <linux/errno.h>
-
-#ifdef __KERNEL__
+//#include <linux/errno.h>
 
 #include <linux/mmdebug.h>
 #include <linux/gfp.h>
 #include <linux/bug.h>
 #include <linux/list.h>
-#include <linux/fs.h>
 #include <linux/mmzone.h>
 #include <linux/rbtree.h>
 #include <linux/atomic.h>
 #include <linux/debug_locks.h>
-#include <linux/mm_types.h>
 #include <linux/range.h>
 #include <linux/pfn.h>
 #include <linux/percpu-refcount.h>
@@ -23,6 +19,7 @@
 #include <linux/resource.h>
 #include <linux/page_ext.h>
 #include <linux/err.h>
+#include <linux/blk_types.h>
 
 struct CLUSTER_table;
 
@@ -36,12 +33,14 @@ struct CLUSTER_table {
 	void *nvmeq;
 	struct CLUSTER_nvme_operations *CLUSTER_nvme_ops;
 	struct list_head pagelist, write_pagelist;
+	struct bio biolist;
 	struct list_head iodlist, free_iodlist;
+
 
 	//spinlock_t table_lock;
 };
 
-typedef int (CLUSTER_end_io_t)(struct bio *, int);
+typedef int (CLUSTER_end_io_t)(struct bio *);
 
 struct task_overlap_data {
 	// vfs
@@ -49,24 +48,19 @@ struct task_overlap_data {
 	char __user *buf;
 	size_t count;
 	loff_t *pos;
-
 	// fs
 	struct list_head pagelist;
-	int page_count, bio_count;
+	int page_count;
+	int bio_count;
 	CLUSTER_end_io_t *end_io;
-
 	// dd
 	void *nvmeq;
-
-	// polling
-	int tag;
-
+	int iod_count;
 	// journaling
 	void *journal;
 };
 
 DECLARE_PER_CPU(struct CLUSTER_table, CLUSTER_tables);
 
-#endif /* __KERNEL__ */
 #endif /* _LINUX_CLUSTER_H */
 

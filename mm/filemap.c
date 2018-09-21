@@ -35,6 +35,7 @@
 #include <linux/cleancache.h>
 #include <linux/rmap.h>
 #include "internal.h"
+#include "../drivers/nvme/host/nvme.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/filemap.h>
@@ -2748,6 +2749,10 @@ ssize_t CLUSTER_generic_file_read(struct file *filp, loff_t *ppos,
 	unsigned int prev_offset;
 	int error = 0;
 
+#ifdef CONFIG_VANILLA_IOSTACK_TIMESTAMP
+	unsigned long long val = rdtsc();
+#endif
+
 	index = *ppos >> PAGE_CACHE_SHIFT;
 	prev_index = ra->prev_pos >> PAGE_CACHE_SHIFT;
 	prev_offset = ra->prev_pos & (PAGE_CACHE_SIZE-1);
@@ -2777,22 +2782,16 @@ find_page:
 		}
 
 		if (poll_page(page)) {
-			if (current->vfs_chain->head) {
-				__clear_page_poll(page);
-				atomic_notifier_call_chain(current->vfs_chain, 0,
-											&current->overlap_data);
-				ret = atomic_notifier_call_chain(current->pc_chain, 0,
-											&current->overlap_data);
-				atomic_notifier_call_chain(current->dd_chain, 0,
-											&current->overlap_data);
-				current->vfs_chain->head = NULL;
-				current->pc_chain->head = NULL;
-				current->dd_chain->head = NULL;
+			struct task_overlap_data *overlap_data = &current->overlap_data;
+	
+			__clear_page_poll(page);
+			CLUSTER_overlap_vfs(overlap_data);
+			ret = CLUSTER_overlap_pc(overlap_data);
+			CLUSTER_overlap_dd(overlap_data);
+			if (ret) {
+				printk(KERN_ERR "[CLUSTER] CLUSTER_generic_file_read first page duplicated\n");
+				goto find_page;
 			}
-		}
-		if (ret) {
-			printk(KERN_ERR "[CLUSTER] CLUSTER_generic_file_read first page duplicated\n");
-			goto find_page;
 		}
 
 		if (!PageUptodate(page)) {
@@ -2863,8 +2862,6 @@ page_ok:
 		offset &= ~PAGE_CACHE_MASK;
 		prev_offset = offset;
 
-//printk("[CLUSTER] CLUSTER_file_read_iter page count before put page %d  index %d\n", page->_count, page->index);
-
 		page_cache_release(page);
 		written += ret;
 		if (!iov_iter_count(iter))
@@ -2897,8 +2894,7 @@ page_not_up_to_date_locked:
 
 readpage:
 
-//printk("[CLUSTER] generic...  readpage??? page count %d index %d\n", page->_count, page->index);
-
+		printk("[CLUSTER] generic...  readpage??? page count %d index %d\n", page->_count, page->index);
 		/*
 		 * A previous I/O error may have been due to temporary
 		 * failures, eg. multipath errors.
@@ -2947,7 +2943,7 @@ readpage_error:
 
 no_cached_page:
 
-	printk("[CLUSTER] generic_file... no_cache_page\n");
+		printk("[CLUSTER] generic_file... no_cache_page\n");
 		/*
 		 * Ok, it wasn't cached, so we need to create a new
 		 * page..
