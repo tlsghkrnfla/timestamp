@@ -612,6 +612,16 @@ static void req_completion(struct nvme_queue *nvmeq, void *ctx,
 	bool requeue = false;
 	int error = 0;
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	unsigned long long value_req, value_req2, value_iod, value_iod2;
+	unsigned long long breakdown[10] = {0};
+	if (req->breakdown) {
+		current->breakdown = breakdown;
+		value_req = rdtsc();
+		req->breakdown[22] = rdtsc();
+	}
+#endif
+
 	if (unlikely(status)) {
 		if (!(status & NVME_SC_DNR || blk_noretry_request(req))
 		    && (jiffies - req->start_time) < req->timeout) {
@@ -646,6 +656,12 @@ static void req_completion(struct nvme_queue *nvmeq, void *ctx,
 			"completing aborted command with status:%04x\n",
 			error);
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (req->breakdown) {
+		value_iod = rdtsc();
+	}
+#endif
+
 release_iod:
 	if (iod->nents) {
 		dma_unmap_sg(nvmeq->dev->dev, iod->sg, iod->nents,
@@ -657,10 +673,26 @@ release_iod:
 				rq_data_dir(req) ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
 		}
 	}
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (req->breakdown) {
+		value_iod2 = rdtsc();
+		req->breakdown[15] += (value_iod2 - value_iod);
+	}
+#endif
+
 	nvme_free_iod(nvmeq->dev, iod);
 
 	if (likely(!requeue))
 		blk_mq_complete_request(req, error);
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (req->breakdown) {
+		value_req2 = rdtsc();
+		req->breakdown[14] += (value_req2 - value_req);
+		req->breakdown[16] += current->breakdown[0];
+	}
+#endif
 }
 
 /* length is in bytes.  gfp flags indicates whether we may sleep. */
@@ -865,6 +897,14 @@ static int nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 	struct nvme_iod *iod;
 	enum dma_data_direction dma_dir;
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	unsigned long long value_dd, value_dd2, value, value2;
+	if (current->breakdown) {
+		req->breakdown = current->breakdown;
+		value_dd = rdtsc();
+	}
+#endif
+
 	/*
 	 * If formated with metadata, require the block layer provide a buffer
 	 * unless this namespace is formated such that the metadata can be
@@ -878,9 +918,19 @@ static int nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 		}
 	}
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown)
+		value = rdtsc();
+#endif
 	iod = nvme_alloc_iod(req, dev, GFP_ATOMIC);
 	if (!iod)
 		return BLK_MQ_RQ_QUEUE_BUSY;
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown) {
+		value2 = rdtsc();
+		current->breakdown[9] += (value2 - value);
+	}
+#endif
 
 	if (req->cmd_flags & REQ_DISCARD) {
 		void *range;
@@ -903,14 +953,34 @@ static int nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 		if (!iod->nents)
 			goto error_cmd;
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown)
+		value = rdtsc();
+#endif
 		if (!dma_map_sg(nvmeq->q_dmadev, iod->sg, iod->nents, dma_dir))
 			goto retry_cmd;
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown) {
+		value2 = rdtsc();
+		current->breakdown[10] += (value2 - value);
+	}
+#endif
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown)
+		value = rdtsc();
+#endif
 		if (blk_rq_bytes(req) !=
                     nvme_setup_prps(dev, iod, blk_rq_bytes(req), GFP_ATOMIC)) {
 			dma_unmap_sg(dev->dev, iod->sg, iod->nents, dma_dir);
 			goto retry_cmd;
 		}
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown) {
+		value2 = rdtsc();
+		current->breakdown[11] += (value2 - value);
+	}
+#endif
 		if (blk_integrity_rq(req)) {
 			if (blk_rq_count_integrity_sg(req->q, req->bio) != 1) {
 				dma_unmap_sg(dev->dev, iod->sg, iod->nents,
@@ -950,6 +1020,15 @@ static int nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 
 	nvme_process_cq(nvmeq);
 	spin_unlock_irq(&nvmeq->q_lock);
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown) {
+		value_dd2 = rdtsc();
+		current->breakdown[8] += (value_dd2 - value_dd);
+		current->breakdown[21] = rdtsc();
+	}
+#endif
+
 	return BLK_MQ_RQ_QUEUE_OK;
 
  error_cmd:
@@ -3663,19 +3742,7 @@ static void CLUSTER_pagelist_alloc(struct nvme_dev *dev)
 			bio->bi_next = bio_alloc(GFP_KERNEL, 32);
 			bio = bio->bi_next;
 			bio->bi_next = NULL;
-
-			//if (!biolist->bi_next) {
-			//	biolist->bi_next = new_bio;
-			//	bio = new_bio;
-			//} else {
-			//	bio->bi_next = new_bio;
-			//	bio = bio->bi_next;
-			//}
-			//bio->bi_next = NULL;
 		}
-
-if (!biolist->bi_next)
-	printk(KERN_ERR "???????????????????????\n");
 
 		INIT_LIST_HEAD(&table->iodlist);
 		for (i = 0; i < 32; i++) {

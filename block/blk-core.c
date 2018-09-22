@@ -2093,7 +2093,16 @@ EXPORT_SYMBOL(generic_make_request);
  */
 blk_qc_t submit_bio(int rw, struct bio *bio)
 {
+	unsigned int ret;
+
 	bio->bi_rw |= rw;
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	unsigned long long value, value2;
+	if (current->breakdown) {
+		value = rdtsc();
+	}
+#endif
 
 	/*
 	 * If it's a regular read/write or a barrier with data attached,
@@ -2125,7 +2134,16 @@ blk_qc_t submit_bio(int rw, struct bio *bio)
 		}
 	}
 
-	return generic_make_request(bio);
+	ret =  generic_make_request(bio);
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown) {
+		value2 = rdtsc();
+		current->breakdown[6] += (value2 - value);
+	}
+#endif
+
+	return ret;
 }
 EXPORT_SYMBOL(submit_bio);
 

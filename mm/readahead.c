@@ -138,7 +138,18 @@ static int read_pages(struct address_space *mapping, struct file *filp,
 	ret = 0;
 
 out:
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown)
+		current->breakdown[7] = rdtsc();
+#endif
+
 	blk_finish_plug(&plug);
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown)
+		current->breakdown[12] = rdtsc();
+#endif
 
 	return ret;
 }
@@ -163,6 +174,12 @@ int __do_page_cache_readahead(struct address_space *mapping, struct file *filp,
 	int ret = 0;
 	loff_t isize = i_size_read(inode);
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	unsigned long long value, value2;
+	if (current->breakdown)
+		current->breakdown[1] = rdtsc();
+#endif
+
 	if (isize == 0)
 		goto out;
 
@@ -177,21 +194,46 @@ int __do_page_cache_readahead(struct address_space *mapping, struct file *filp,
 		if (page_offset > end_index)
 			break;
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown)
+		value = rdtsc();
+#endif
 		rcu_read_lock();
 		page = radix_tree_lookup(&mapping->page_tree, page_offset);
 		rcu_read_unlock();
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown) {
+		value2 = rdtsc();
+		current->breakdown[19] += (value2 - value);
+	}
+#endif
 		if (page && !radix_tree_exceptional_entry(page))
 			continue;
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown)
+		value = rdtsc();
+#endif
 		page = page_cache_alloc_readahead(mapping);
 		if (!page)
 			break;
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown) {
+		value2 = rdtsc();
+		current->breakdown[20] += (value2 - value);
+	}
+#endif
 		page->index = page_offset;
 		list_add(&page->lru, &page_pool);
 		if (page_idx == nr_to_read - lookahead_size)
 			SetPageReadahead(page);
 		ret++;
 	}
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown)
+		current->breakdown[2] = rdtsc();
+#endif
 
 	/*
 	 * Now start the IO.  We ignore I/O errors - if the page is not

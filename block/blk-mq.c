@@ -321,7 +321,21 @@ void blk_mq_end_request(struct request *rq, int error)
 {
 	if (blk_update_request(rq, error, blk_rq_bytes(rq)))
 		BUG();
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	unsigned long long value, value2;
+	if (current->breakdown)
+		value = rdtsc();
+#endif
+
 	__blk_mq_end_request(rq, error);
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown) {
+		value2 = rdtsc();
+		current->breakdown[0] = value2 - value;
+	}
+#endif
 }
 EXPORT_SYMBOL(blk_mq_end_request);
 

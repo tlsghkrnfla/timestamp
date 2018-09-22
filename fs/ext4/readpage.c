@@ -151,6 +151,9 @@ int ext4_mpage_readpages(struct address_space *mapping,
 	int length;
 	unsigned relative_block = 0;
 	struct ext4_map_blocks map;
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	unsigned long long value, value2;
+#endif
 
 	map.m_pblk = 0;
 	map.m_lblk = 0;
@@ -165,9 +168,21 @@ int ext4_mpage_readpages(struct address_space *mapping,
 		if (pages) {
 			page = list_entry(pages->prev, struct page, lru);
 			list_del(&page->lru);
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+			if (current->breakdown) {
+				value = rdtsc();
+			}
+#endif
 			if (add_to_page_cache_lru(page, mapping, page->index,
 				  mapping_gfp_constraint(mapping, GFP_KERNEL)))
 				goto next_page;
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+			if (current->breakdown) {
+				value2 = rdtsc();
+				current->breakdown[3] += (value2 - value);
+			}
+#endif
 		}
 
 		if (page_has_buffers(page))
@@ -213,6 +228,11 @@ int ext4_mpage_readpages(struct address_space *mapping,
 				map.m_lblk = block_in_file;
 				map.m_len = last_block - block_in_file;
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+				if (current->breakdown) {
+					value = rdtsc();
+				}
+#endif
 				if (ext4_map_blocks(NULL, inode, &map, 0) < 0) {
 				set_error_page:
 					SetPageError(page);
@@ -221,6 +241,12 @@ int ext4_mpage_readpages(struct address_space *mapping,
 					unlock_page(page);
 					goto next_page;
 				}
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+				if (current->breakdown) {
+					value2 = rdtsc();
+					current->breakdown[4] += (value2 - value);
+				}
+#endif
 			}
 			if ((map.m_flags & EXT4_MAP_MAPPED) == 0) {
 				fully_mapped = 0;
@@ -283,6 +309,11 @@ int ext4_mpage_readpages(struct address_space *mapping,
 				if (IS_ERR(ctx))
 					goto set_error_page;
 			}
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+			if (current->breakdown) {
+				value = rdtsc();
+			}
+#endif
 			bio = bio_alloc(GFP_KERNEL,
 				min_t(int, nr_pages, BIO_MAX_PAGES));
 			if (!bio) {
@@ -290,6 +321,12 @@ int ext4_mpage_readpages(struct address_space *mapping,
 					ext4_release_crypto_ctx(ctx);
 				goto set_error_page;
 			}
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+			if (current->breakdown) {
+				value2 = rdtsc();
+				current->breakdown[5] += (value2 - value);
+			}
+#endif
 			bio->bi_bdev = bdev;
 			bio->bi_iter.bi_sector = blocks[0] << (blkbits - 9);
 			bio->bi_end_io = mpage_end_io;

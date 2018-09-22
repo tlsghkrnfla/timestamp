@@ -1380,6 +1380,9 @@ struct tlbflush_unmap_batch {
 
 struct task_struct {
 	struct task_overlap_data overlap_data;
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	unsigned long long *breakdown;
+#endif
 
 	volatile long state;	/* -1 unrunnable, 0 runnable, >0 stopped */
 	void *stack;

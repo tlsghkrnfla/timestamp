@@ -86,6 +86,10 @@ enum rq_cmd_type_bits {
  * especially blk_mq_rq_ctx_init() to take care of the added fields.
  */
 struct request {
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	unsigned long long *breakdown;
+#endif
+
 	struct list_head queuelist;
 	union {
 		struct call_single_data csd;

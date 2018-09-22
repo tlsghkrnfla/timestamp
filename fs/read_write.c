@@ -23,6 +23,9 @@
 
 #include <linux/cluster.h>
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/cluster_latency.h>
+
 ssize_t CLUSTER_lw_read(struct file *, char __user *, size_t, loff_t *);
 
 typedef ssize_t (*io_fn_t)(struct file *, char __user *, size_t, loff_t *);
@@ -570,7 +573,7 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 
 #ifdef CONFIG_IOSTACK_TIMESTAMP
 	unsigned long long value, value2;
-	unsigned long long breakdown[10] = {0};
+	unsigned long long breakdown[23] = {0};
 	value = rdtsc();
 #endif
 
@@ -578,14 +581,14 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 		loff_t pos = file_pos_read(f.file);
 
 #ifdef CONFIG_IOSTACK_TIMESTAMP
-		if (f.file->f_flags & 040000000) {
+		if (f.file->f_flags & O_CLUSTER) {
 			current->breakdown = breakdown;
 		} else
 			current->breakdown = NULL;
 #endif
-		if (f.file->flags & O_CLUSTER)
-			ret = CLUSTER_lw_read(f.file, buf, count, &pos);
-		else
+		//if (f.file->f_flags & O_CLUSTER)
+		//	ret = CLUSTER_lw_read(f.file, buf, count, &pos);
+		//else
 			ret = vfs_read(f.file, buf, count, &pos);
 		if (ret >= 0)
 			file_pos_write(f.file, pos);
@@ -595,9 +598,17 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 #ifdef CONFIG_IOSTACK_TIMESTAMP
 	value2 = rdtsc();
 
+	// total, vfs, page lookup(first), page allocation, before blk_finish_plug, after blk_finish_plug,
+	// before lock_page, after lock_page, do_generic_file_read end, io end
 	if (current->breakdown) {
-		trace_CLUSTER_read_breakdown(value2 - value, breakdown[0], breakdown[1], breakdown[2], breakdown[3],
-			breakdown[4], breakdown[5], breakdown[6], breakdown[7], breakdown[8]);
+		trace_CLUSTER_read_breakdown(value2 - value, breakdown[0] - value, breakdown[1] - breakdown[0],
+			breakdown[2] - breakdown[1], breakdown[7] - breakdown[2], breakdown[12] - breakdown[7],
+			breakdown[13] - breakdown[12], breakdown[17] - breakdown[13], breakdown[18] - breakdown[17],
+			value2 - breakdown[18], breakdown[22] - breakdown[21]);
+		trace_CLUSTER_read_oper_breakdown(breakdown[19], breakdown[20], breakdown[3], breakdown[4],
+			breakdown[5], breakdown[6],
+			breakdown[8], breakdown[9], breakdown[10], breakdown[11], breakdown[14], breakdown[15],
+			breakdown[16]);
 	}
 #endif
 
@@ -626,7 +637,13 @@ SYSCALL_DEFINE4(pread64, unsigned int, fd, char __user *, buf,
 {
 	struct fd f;
 	ssize_t ret = -EBADF;
-
+/*
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	unsigned long long value, value2;
+	unsigned long long breakdown[23] = {0};
+	value = rdtsc();
+#endif
+*/
 	if (pos < 0)
 		return -EINVAL;
 
@@ -634,14 +651,39 @@ SYSCALL_DEFINE4(pread64, unsigned int, fd, char __user *, buf,
 	if (f.file) {
 		ret = -ESPIPE;
 		if (f.file->f_mode & FMODE_PREAD) {
-			if (f.file->f_flags & O_CLUSTER)
-				ret = CLUSTER_lw_read(f.file, buf, count, &pos);
-			else
+/*
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+		if (f.file->f_flags & O_CLUSTER) {
+			current->breakdown = breakdown;
+		} else
+			current->breakdown = NULL;
+#endif
+*/
+			//if (f.file->f_flags & O_CLUSTER)
+			//	ret = CLUSTER_lw_read(f.file, buf, count, &pos);
+			//else
 				ret = vfs_read(f.file, buf, count, &pos);
 		}
 		fdput(f);
 	}
+/*
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	value2 = rdtsc();
 
+	// total, vfs, page lookup(first), page allocation, before blk_finish_plug, after blk_finish_plug,
+	// before lock_page, after lock_page, do_generic_file_read end, io end
+	if (current->breakdown) {
+		trace_CLUSTER_read_breakdown(value2 - value, breakdown[0] - value, breakdown[1] - breakdown[0],
+			breakdown[2] - breakdown[1], breakdown[7] - breakdown[2], breakdown[12] - breakdown[7],
+			breakdown[13] - breakdown[12], breakdown[17] - breakdown[13], breakdown[18] - breakdown[17],
+			value2 - breakdown[18], breakdown[22] - breakdown[21]);
+		trace_CLUSTER_read_oper_breakdown(breakdown[19], breakdown[20], breakdown[3], breakdown[4],
+			breakdown[5], breakdown[6],
+			breakdown[8], breakdown[9], breakdown[10], breakdown[11], breakdown[14], breakdown[15],
+			breakdown[16]);
+	}
+#endif
+*/
 	return ret;
 }
 

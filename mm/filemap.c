@@ -1541,6 +1541,11 @@ static ssize_t do_generic_file_read(struct file *filp, loff_t *ppos,
 	unsigned int prev_offset;
 	int error = 0;
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown)
+		current->breakdown[0] = rdtsc();
+#endif
+
 	index = *ppos >> PAGE_CACHE_SHIFT;
 	prev_index = ra->prev_pos >> PAGE_CACHE_SHIFT;
 	prev_offset = ra->prev_pos & (PAGE_CACHE_SIZE-1);
@@ -1648,10 +1653,18 @@ page_ok:
 		continue;
 
 page_not_up_to_date:
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+		if (current->breakdown)
+			current->breakdown[13] = rdtsc();
+#endif
 		/* Get exclusive access to the page ... */
 		error = lock_page_killable(page);
 		if (unlikely(error))
 			goto readpage_error;
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+		if (current->breakdown)
+			current->breakdown[17] = rdtsc();
+#endif
 
 page_not_up_to_date_locked:
 		/* Did it get truncated before we got the lock? */
@@ -1744,6 +1757,10 @@ out:
 
 	*ppos = ((loff_t)index << PAGE_CACHE_SHIFT) + offset;
 	file_accessed(filp);
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+		if (current->breakdown)
+			current->breakdown[18] = rdtsc();
+#endif
 	return written ? written : error;
 }
 
@@ -2749,8 +2766,9 @@ ssize_t CLUSTER_generic_file_read(struct file *filp, loff_t *ppos,
 	unsigned int prev_offset;
 	int error = 0;
 
-#ifdef CONFIG_VANILLA_IOSTACK_TIMESTAMP
-	unsigned long long val = rdtsc();
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+	if (current->breakdown)
+		current->breakdown[0] = rdtsc();
 #endif
 
 	index = *ppos >> PAGE_CACHE_SHIFT;
@@ -2873,10 +2891,21 @@ page_ok:
 		continue;
 
 page_not_up_to_date:
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+		if (current->breakdown)
+			current->breakdown[13] = rdtsc();
+#endif
+
 		/* Get exclusive access to the page ... */
 		error = lock_page_killable(page);
 		if (unlikely(error))
 			goto readpage_error;
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+		if (current->breakdown)
+			current->breakdown[17] = rdtsc();
+#endif
 
 page_not_up_to_date_locked:
 		/* Did it get truncated before we got the lock? */
@@ -2973,6 +3002,12 @@ out:
 
 	*ppos = ((loff_t)index << PAGE_CACHE_SHIFT) + offset;
 	file_accessed(filp);
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+		if (current->breakdown)
+			current->breakdown[18] = rdtsc();
+#endif
+
 	return written ? written : error;
 }
 
