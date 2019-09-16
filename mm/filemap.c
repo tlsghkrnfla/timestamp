@@ -1541,6 +1541,8 @@ static ssize_t do_generic_file_read(struct file *filp, loff_t *ppos,
 	unsigned int prev_offset;
 	int error = 0;
 
+	unsigned long long value, value2;
+
 #ifdef CONFIG_IOSTACK_TIMESTAMP
 	if (current->breakdown)
 		current->breakdown[0] = rdtsc();
@@ -1598,6 +1600,11 @@ page_ok:
 		 * another truncate extends the file - this is desired though).
 		 */
 
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+		if (current->breakdown)
+			value = rdtsc();
+#endif
+
 		isize = i_size_read(inode);
 		end_index = (isize - 1) >> PAGE_CACHE_SHIFT;
 		if (unlikely(!isize || index > end_index)) {
@@ -1641,6 +1648,13 @@ page_ok:
 		index += offset >> PAGE_CACHE_SHIFT;
 		offset &= ~PAGE_CACHE_MASK;
 		prev_offset = offset;
+
+#ifdef CONFIG_IOSTACK_TIMESTAMP
+		if (current->breakdown) {
+			value2 = rdtsc();
+			current->breakdown[23] += value2 - value;
+		}
+#endif
 
 		page_cache_release(page);
 		written += ret;

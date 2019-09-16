@@ -573,7 +573,7 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 
 #ifdef CONFIG_IOSTACK_TIMESTAMP
 	unsigned long long value, value2;
-	unsigned long long breakdown[23] = {0};
+	unsigned long long breakdown[24] = {0};
 	value = rdtsc();
 #endif
 
@@ -604,7 +604,7 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 		trace_CLUSTER_read_breakdown(value2 - value, breakdown[0] - value, breakdown[1] - breakdown[0],
 			breakdown[2] - breakdown[1], breakdown[7] - breakdown[2], breakdown[12] - breakdown[7],
 			breakdown[13] - breakdown[12], breakdown[17] - breakdown[13], breakdown[18] - breakdown[17],
-			value2 - breakdown[18], breakdown[22] - breakdown[21]);
+			value2 - breakdown[18], breakdown[22] - breakdown[21], breakdown[23], 0, 0, 0, 0);
 		trace_CLUSTER_read_oper_breakdown(breakdown[19], breakdown[20], breakdown[3], breakdown[4],
 			breakdown[5], breakdown[6],
 			breakdown[8], breakdown[9], breakdown[10], breakdown[11], breakdown[14], breakdown[15],
